@@ -11,21 +11,67 @@
 (function () {
   'use strict';
 
+  // ---------- Error log (shown in the ⚙ panel; iPad has no easy console) ----------
+  var errors = window.__pvzErrors = [];
+  function logError(msg) {
+    msg = String(msg || 'Unknown error').slice(0, 300);
+    if (errors.length >= 20 || errors.indexOf(msg) !== -1) return;
+    errors.push(msg);
+    try { window.dispatchEvent(new CustomEvent('pvz:error', { detail: msg })); } catch (e) {}
+  }
+  window.addEventListener('error', function (e) {
+    if (e.target && e.target !== window && (e.target.src || e.target.href)) {
+      logError('Failed to load ' + (e.target.src || e.target.href));
+    } else {
+      logError((e.message || 'Script error') + (e.filename ? ' @ ' + e.filename.split('/').pop() + ':' + e.lineno : ''));
+    }
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    logError('Unhandled: ' + (r && (r.stack || r.message) ? (r.message || r.stack) : r));
+  });
+  var origConsoleError = console.error;
+  console.error = function () {
+    try {
+      var parts = [];
+      for (var i = 0; i < arguments.length; i++) {
+        var a = arguments[i];
+        parts.push(a && a.message ? a.message : typeof a === 'string' ? a : (function () { try { return JSON.stringify(a); } catch (x) { return String(a); } })());
+      }
+      logError(parts.join(' '));
+    } catch (e) {}
+    return origConsoleError.apply(console, arguments);
+  };
+
   // ---------- Audio unlock ----------
-  var audioContexts = [];
-  ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
+  // Constructors are wrapped with plain factory functions (not `class extends`), because
+  // Safari can refuse to subclass built-in media constructors. Any failure falls back to the
+  // original constructor, so the game's audio can never be broken by this file.
+  function wrapConstructor(name, onCreate) {
     var Orig = window[name];
     if (typeof Orig !== 'function') return;
+    function Wrapped() {
+      var obj;
+      switch (arguments.length) {
+        case 0: obj = new Orig(); break;
+        case 1: obj = new Orig(arguments[0]); break;
+        default: obj = new Orig(arguments[0], arguments[1]);
+      }
+      try { onCreate(obj); } catch (e) {}
+      return obj;
+    }
     try {
-      var Patched = class extends Orig {
-        constructor() {
-          super(...arguments);
-          audioContexts.push(this);
-        }
-      };
-      window[name] = Patched;
-    } catch (e) { /* leave untouched */ }
-  });
+      Wrapped.prototype = Orig.prototype;
+      Object.setPrototypeOf(Wrapped, Orig); // keep static members (e.g. AudioContext.prototype checks)
+      window[name] = Wrapped;
+    } catch (e) {
+      window[name] = Orig;
+    }
+  }
+
+  var audioContexts = [];
+  wrapConstructor('AudioContext', function (ctx) { audioContexts.push(ctx); });
+  wrapConstructor('webkitAudioContext', function (ctx) { audioContexts.push(ctx); });
 
   function unlockAudio() {
     audioContexts.forEach(function (ctx) {
@@ -45,17 +91,7 @@
   // first touch every idle, source-less element plays a silent clip muted, then resets.
   var SILENT_WAV = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA';
   var audioElements = [];
-  if (typeof window.Audio === 'function') {
-    try {
-      var OrigAudio = window.Audio;
-      window.Audio = class extends OrigAudio {
-        constructor() {
-          super(...arguments);
-          audioElements.push(this);
-        }
-      };
-    } catch (e) {}
-  }
+  wrapConstructor('Audio', function (el) { audioElements.push(el); });
   var elementsUnlocked = false;
   function unlockAudioElements() {
     if (elementsUnlocked) return;

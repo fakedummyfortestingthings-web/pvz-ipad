@@ -194,3 +194,19 @@ canvas {
   font-weight: 700;
 }
 #pvz-toast button.close { background: transparent; color: #fff; opacity: 0.7; }
+
+#pvz-hud.has-errors .pvz-gear::after { content: " !"; color: #fbbf24; }
+#pvz-diag h3 { margin: 14px 0 4px; font-size: 13px; opacity: 0.7; font-weight: 600; }
+#pvz-diag pre {
+  margin: 0;
+  padding: 8px;
+  max-height: 140px;
+  overflow: auto;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  font: 11px/1.4 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#pvz-panel .pvz-row span:last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; }
+#pvz-diag pre { text-align: left; }

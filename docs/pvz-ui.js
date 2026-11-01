@@ -82,7 +82,7 @@
   }
   // Re-run a few times: the game keeps loading files after the page's load event.
   window.addEventListener('load', function () {
-    [5000, 30000, 120000].forEach(function (d) { setTimeout(warmCache, d); });
+    [60000, 180000].forEach(function (d) { setTimeout(warmCache, d); });
   });
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') warmCache();
@@ -117,8 +117,10 @@
           '<button type="button" data-a="import">Import save</button>' +
           '<button type="button" data-a="sync">Sync now</button>' +
           '<button type="button" data-a="offline">Download all for offline</button>' +
+          '<button type="button" class="wide ghost" data-a="repair">Repair (clear offline copy, keeps saves)</button>' +
           '<button type="button" class="wide ghost" data-a="close">Close</button>' +
         '</div>' +
+        '<div id="pvz-diag"><h3>Device</h3><pre data-f="device"></pre><h3>Problems</h3><pre data-f="errors"></pre></div>' +
         '<div id="pvz-progress"><div class="bar"><div class="fill"></div></div><div class="text"></div></div>' +
       '</div>');
     backdrop.addEventListener('click', function (e) {
@@ -134,6 +136,7 @@
         else toast('Cloud sync is not configured.');
       }
       if (act === 'offline') downloadAll(a);
+      if (act === 'repair') repair();
     });
     progress = backdrop.querySelector('#pvz-progress');
 
@@ -187,10 +190,47 @@
     if (cloud.state === 'synced' && meta && meta.lastSyncedAt) c += ' · ' + fmtTime(meta.lastSyncedAt);
     if (cloud.state === 'error' && cloud.detail) c += ': ' + cloud.detail;
     f('cloud').textContent = c;
+    f('device').textContent = deviceInfo();
+    var errs = window.__pvzErrors || [];
+    f('errors').textContent = errs.length ? errs.join('\n\n') : 'None';
+    hud.classList.toggle('has-errors', errs.length > 0);
     var packDone = false;
     try { packDone = localStorage.getItem(packKey()) === '1'; } catch (e) {}
     f('pack').textContent = !swSupported ? 'Needs HTTPS' : packDone ? 'Downloaded' : 'Partial (as you play)';
   }
+
+  // ---------- Diagnostics ----------
+  var avifOk = null;
+  (function () {
+    var img = new Image();
+    img.onload = function () { avifOk = img.width > 0; render(); };
+    img.onerror = function () { avifOk = false; render(); };
+    img.src = 'data:image/avif;base64,AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADybWV0YQAAAAAAAAAoaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAGxpYmF2aWYAAAAADnBpdG0AAAAAAAEAAAAeaWxvYwAAAABEAAABAAEAAAABAAABGgAAAB0AAAAoaWluZgAAAAAAAQAAABppbmZlAgAAAAABAABhdjAxQ29sb3IAAAAAamlwcnAAAABLaXBjbwAAABRpc3BlAAAAAAAAAAIAAAACAAAAEHBpeGkAAAAAAwgICAAAAAxhdjFDgQ0MAAAAABNjb2xybmNseAACAAIAAYAAAAAXaXBtYQAAAAAAAAABAAEEAQKDBAAAACVtZGF0EgAKCBgANogQEAwgMg8f8D///8WfhwB8+ErK42A=';
+  })();
+  function deviceInfo() {
+    var started = !!(window.cc && window.cc.director && window.cc.director.getScene && window.cc.director.getScene());
+    return [
+      navigator.userAgent,
+      'Screen ' + screen.width + '×' + screen.height + ' @' + (window.devicePixelRatio || 1) + 'x',
+      'AVIF images: ' + (avifOk === null ? 'checking…' : avifOk ? 'supported' : 'NOT supported (needs iPadOS 16+)'),
+      'Service worker: ' + (!swSupported ? 'unavailable' : navigator.serviceWorker.controller ? 'active ' + (swVersion || '') : 'not yet active'),
+      'Home Screen app: ' + (navigator.standalone || matchMedia('(display-mode: standalone)').matches ? 'yes' : 'no'),
+      'Game engine started: ' + (started ? 'yes' : 'no')
+    ].join('\n');
+  }
+  function repair() {
+    if (!confirm('Clear the offline copy and reload? Your saves are kept.')) return;
+    var jobs = [];
+    if (window.caches) jobs.push(caches.keys().then(function (ks) {
+      return Promise.all(ks.filter(function (k) { return k.indexOf('pvz-') === 0; }).map(function (k) { return caches.delete(k); }));
+    }));
+    if (swSupported) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+      return Promise.all(rs.map(function (r) { return r.unregister(); }));
+    }));
+    try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('__pvz_pack_') === 0) localStorage.removeItem(k); }); } catch (e) {}
+    Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
+  }
+  window.addEventListener('pvz:error', function () { render(); });
 
   // ---------- Download all for offline ----------
   var downloading = false;

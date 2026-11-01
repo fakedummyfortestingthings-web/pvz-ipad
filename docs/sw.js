@@ -78,7 +78,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (req.mode === 'navigate') {
-    event.respondWith(networkFirst(req, SHELL_CACHE, INDEX_URL));
+    event.respondWith(networkOnlyThenCache(req, SHELL_CACHE, INDEX_URL));
     return;
   }
 
@@ -127,6 +127,26 @@ async function networkFirst(req, cacheName, fallbackUrl) {
                 (fallbackUrl && (await caches.match(ROOT_URL)));
     if (hit) return hit;
     return network; // no cached copy: keep waiting for the network (or surface its error)
+  }
+}
+
+// Pages: always the current version when the network works (even if slow), cached copy only offline.
+// A stale page would point at an old release folder that no longer exists after a deploy.
+async function networkOnlyThenCache(req, cacheName, fallbackUrl) {
+  try {
+    const res = await fetch(req);
+    if (cacheable(res)) {
+      const cache = await caches.open(cacheName);
+      cache.put(req, res.clone()).catch(() => {});
+      if (new URL(req.url).pathname === SCOPE.pathname) cache.put(INDEX_URL, res.clone()).catch(() => {});
+    }
+    return res;
+  } catch (e) {
+    const hit = (await caches.match(req, { ignoreSearch: true })) ||
+                (await caches.match(fallbackUrl)) ||
+                (await caches.match(ROOT_URL));
+    if (hit) return hit;
+    throw e;
   }
 }
 

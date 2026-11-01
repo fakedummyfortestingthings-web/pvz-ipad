@@ -22,11 +22,11 @@ test('Web Lite preserves audio initialization before AVIF registration and game 
         const patched = patchWebIndexForAvif(webEntry);
         const source = patched.slice('<script>'.length, -'</script>'.length).replace(/(?<!\.)\bimport\(/g, 'importModule(');
         await vm.runInNewContext(source, {
-            System: system, window: { System: system },
+            System: system, window: { System: system }, URL, document: { baseURI: 'https://game.test/releases/x/' },
             console: { error: error => events.push(error.message) },
             importModule: async name => {
                 events.push(name);
-                return name === './game-audio.js'
+                return name.endsWith('game-audio.js')
                     ? { initializeGameAudio: async () => { events.push('audio-ready'); } }
                     : { registerAvifSupport: () => {
                         events.push('avif-ready');
@@ -34,7 +34,7 @@ test('Web Lite preserves audio initialization before AVIF registration and game 
                     } };
             },
         });
-        assert.deepEqual(events, ['./game-audio.js', 'audio-ready', './resource-codec-avif-support.js', 'cc', 'avif-ready',
+        assert.deepEqual(events, ['./game-audio.js', 'audio-ready', 'https://game.test/releases/x/resource-codec-avif-support.js', 'cc', 'avif-ready',
             registrationFails ? 'registration-failed' : './index.js']);
     }
     assert.throws(() => patchWebIndexForAvif('<html></html>'), /exactly one/);

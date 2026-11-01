@@ -150,6 +150,7 @@
     });
 
     toastEl = el('div', { id: 'pvz-toast', role: 'status' });
+    probeStartupFiles();
 
     document.body.appendChild(hud);
     document.body.appendChild(backdrop);
@@ -230,7 +231,25 @@
     try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('__pvz_pack_') === 0) localStorage.removeItem(k); }); } catch (e) {}
     Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
   }
-  window.addEventListener('pvz:error', function () { render(); });
+  // When a startup file fails to load, check each one and report its HTTP status.
+  var IMPORT_FAIL = /module script failed|dynamically imported module|loading dynamically imported/i;
+  var probed = false;
+  function probeStartupFiles() {
+    if (probed) return;
+    var errs = window.__pvzErrors || [];
+    if (!errs.some(function (e) { return IMPORT_FAIL.test(e); })) return;
+    probed = true;
+    var push = function (m) { errs.push(m); render(); };
+    push('Base URL: ' + document.baseURI);
+    ['game-audio.js', 'resource-codec-avif-support.js', 'index.js', 'src/system.bundle.js', 'src/import-map.json', 'audio/manifest.json']
+      .forEach(function (f) {
+        var u = new URL(f, document.baseURI).href;
+        fetch(u, { cache: 'no-store' })
+          .then(function (r) { push(f + ': HTTP ' + r.status + ' ' + (r.headers.get('content-type') || '')); })
+          .catch(function (e) { push(f + ': ' + e.message); });
+      });
+  }
+  window.addEventListener('pvz:error', function () { render(); probeStartupFiles(); });
 
   // ---------- Download all for offline ----------
   var downloading = false;

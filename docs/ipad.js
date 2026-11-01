@@ -15,6 +15,8 @@
   var errors = window.__pvzErrors = [];
   function logError(msg) {
     msg = String(msg || 'Unknown error').slice(0, 300);
+    // Normal before the first tap: browsers block sound until the user interacts.
+    if (/user didn't interact|NotAllowedError|not allowed by the user agent|play failed/i.test(msg)) return;
     if (errors.length >= 20 || errors.indexOf(msg) !== -1) return;
     errors.push(msg);
     try { window.dispatchEvent(new CustomEvent('pvz:error', { detail: msg })); } catch (e) {}

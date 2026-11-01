@@ -118,7 +118,7 @@
   <script src="tmpPatch.js"></script>
   <script>
     // PVZ: wait (max 1.5 s) for saves to be restored from IndexedDB before booting.
-    PVZSave.gateBoot(function () { return import('./game-audio.js'); })
+    PVZSave.gateBoot(function () { return import(new URL('game-audio.js', document.baseURI).href); })
       .then(function (audio) { return audio.initializeGameAudio(); })
       .then(function () { return System.import('./index.js'); })
       .catch(function (err) { console.error(err); });

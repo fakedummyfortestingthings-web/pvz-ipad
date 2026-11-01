@@ -115,7 +115,9 @@ export function patchWebIndexForAvif(html) {
         throw new Error('Web index must contain exactly one Cocos launch import');
     }
     // Replace only the launcher expression so the web audio initialization stays first.
-    return html.replace(launchPattern, `import('./${AVIF_RUNTIME_FILE}')
+    // Absolute URL from document.baseURI: Safari can resolve import() in inline scripts
+    // against the page URL instead of <base href>, which breaks the Pages release layout.
+    return html.replace(launchPattern, `import(new URL('${AVIF_RUNTIME_FILE}', document.baseURI).href)
       .then(function (runtime) { return System.import('cc').then(function (cc) {
         runtime.registerAvifSupport(cc);
         return window.System.import('./index.js');

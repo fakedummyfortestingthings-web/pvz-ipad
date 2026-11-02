@@ -164,6 +164,20 @@ async function staleWhileRevalidate(req, cacheName, event) {
   return update;
 }
 
+// Safari asks for music in many small Range pieces. Keep the last few files' bytes in memory
+// so each piece is a cheap slice instead of re-reading a multi-MB file from storage.
+const RANGE_MEMO_MAX = 3;
+const rangeMemo = new Map(); // url -> Promise<ArrayBuffer>
+function bodyOf(url, response) {
+  let p = rangeMemo.get(url);
+  if (p) { rangeMemo.delete(url); rangeMemo.set(url, p); return p; }
+  p = response.arrayBuffer();
+  rangeMemo.set(url, p);
+  p.catch(() => rangeMemo.delete(url));
+  while (rangeMemo.size > RANGE_MEMO_MAX) rangeMemo.delete(rangeMemo.keys().next().value);
+  return p;
+}
+
 // Safari requests <audio>/<video> with Range headers; serve slices of the full cached file.
 async function rangeFromCache(req, event) {
   const full = await caches.match(req.url, { ignoreVary: true });
@@ -177,7 +191,7 @@ async function rangeFromCache(req, event) {
     })());
     return fetch(req);
   }
-  const buf = await full.arrayBuffer();
+  const buf = await bodyOf(req.url, full);
   const size = buf.byteLength;
   const m = /bytes=(\d*)-(\d*)/.exec(req.headers.get('range') || '');
   let start = m && m[1] ? parseInt(m[1], 10) : 0;

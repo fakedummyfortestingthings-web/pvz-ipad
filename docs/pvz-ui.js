@@ -50,9 +50,11 @@
   // On the very first visit the worker starts controlling the page only after the game has
   // loaded, so those files never passed through it. Cache everything this page already
   // loaded, so the next launch works offline even without "Download all".
+  // Later visits are already cached as files load, so skip the extra work (it caused hitches).
+  var firstVisit = swSupported && !navigator.serviceWorker.controller;
   var warming = false;
   function warmCache() {
-    if (warming || !swVersion || !navigator.serviceWorker.controller || !window.caches) return;
+    if (!firstVisit || warming || !swVersion || !navigator.serviceWorker.controller || !window.caches) return;
     warming = true;
     var origin = location.origin;
     var seen = {};
@@ -100,18 +102,30 @@
   }
 
   function build() {
-    hud = el('button', { id: 'pvz-hud', type: 'button', 'aria-label': 'Save and offline settings' },
-      '<span class="pvz-dot"></span><span class="pvz-hud-label"></span><span class="pvz-gear">⚙</span>');
+    hud = el('div', { id: 'pvz-hud' },
+      '<button type="button" class="pvz-hud-btn" data-h="fs" aria-label="Full screen">⛶</button>' +
+      '<button type="button" class="pvz-hud-btn" data-h="menu" aria-label="Save, offline and graphics settings">' +
+        '<span class="pvz-dot"></span><span class="pvz-hud-label"></span><span class="pvz-gear">⚙</span></button>');
     label = hud.querySelector('.pvz-hud-label');
-    hud.addEventListener('click', openPanel);
+    hud.addEventListener('click', function (e) {
+      var b = e.target.closest && e.target.closest('[data-h]');
+      if (!b) return;
+      if (b.getAttribute('data-h') === 'fs') toggleFullscreen(); else openPanel();
+    });
+    if (!fsSupported()) hud.querySelector('[data-h="fs"]').style.display = 'none';
 
     backdrop = el('div', { id: 'pvz-panel-backdrop' },
       '<div id="pvz-panel" role="dialog" aria-modal="true" aria-labelledby="pvz-panel-title">' +
-        '<h2 id="pvz-panel-title">Save &amp; offline</h2>' +
+        '<h2 id="pvz-panel-title">Settings</h2>' +
         '<div class="pvz-row"><span>Network</span><span data-f="net"></span></div>' +
         '<div class="pvz-row"><span>Last local save</span><span data-f="local"></span></div>' +
         '<div class="pvz-row"><span>Cloud</span><span data-f="cloud"></span></div>' +
         '<div class="pvz-row"><span>Offline pack</span><span data-f="pack"></span></div>' +
+        '<div class="pvz-quality"><span>Graphics</span><div class="pvz-seg">' +
+          '<button type="button" data-q="smooth">Smoothest</button>' +
+          '<button type="button" data-q="balanced">Balanced</button>' +
+          '<button type="button" data-q="sharp">Sharpest</button>' +
+        '</div></div>' +
         '<div class="pvz-actions">' +
           '<button type="button" data-a="export">Export save</button>' +
           '<button type="button" data-a="import">Import save</button>' +
@@ -125,6 +139,15 @@
       '</div>');
     backdrop.addEventListener('click', function (e) {
       if (e.target === backdrop) closePanel();
+      var qb = e.target.closest && e.target.closest('[data-q]');
+      if (qb) {
+        var nq = qb.getAttribute('data-q');
+        if (nq === window.__pvzQuality) return;
+        try { localStorage.setItem('__pvz_quality', nq); } catch (err) {}
+        if (window.PVZSave) window.PVZSave.flush();
+        location.reload();
+        return;
+      }
       var a = e.target.closest && e.target.closest('[data-a]');
       if (!a) return;
       var act = a.getAttribute('data-a');
@@ -153,10 +176,38 @@
     probeStartupFiles();
 
     document.body.appendChild(hud);
+    if (isTouchUI()) setTimeout(offerFullscreen, 1500);
     document.body.appendChild(backdrop);
     document.body.appendChild(fileInput);
     document.body.appendChild(toastEl);
     render();
+  }
+
+  // ---------- Full screen ----------
+  function fsElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
+  function fsSupported() {
+    var d = document.documentElement;
+    return !isStandalone() && !!(d.requestFullscreen || d.webkitRequestFullscreen) &&
+      (document.fullscreenEnabled !== false || document.webkitFullscreenEnabled);
+  }
+  function isStandalone() { return !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches)); }
+  function toggleFullscreen() {
+    try {
+      if (fsElement()) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      } else {
+        var d = document.documentElement;
+        var r = (d.requestFullscreen || d.webkitRequestFullscreen).call(d);
+        if (r && r.catch) r.catch(function () { toast('Full screen isn\'t available here. Use Share → Add to Home Screen instead.'); });
+      }
+    } catch (e) {
+      toast('Full screen isn\'t available here. Use Share → Add to Home Screen instead.');
+    }
+  }
+  function offerFullscreen() {
+    if (!fsSupported() || fsElement()) return;
+    try { if (sessionStorage.getItem('__pvz_fs_offered')) return; sessionStorage.setItem('__pvz_fs_offered', '1'); } catch (e) {}
+    toast('Play in full screen?', 'Full screen', toggleFullscreen);
   }
 
   function openPanel() { render(); backdrop.classList.add('open'); }
@@ -191,6 +242,8 @@
     if (cloud.state === 'synced' && meta && meta.lastSyncedAt) c += ' · ' + fmtTime(meta.lastSyncedAt);
     if (cloud.state === 'error' && cloud.detail) c += ': ' + cloud.detail;
     f('cloud').textContent = c;
+    var qs = backdrop.querySelectorAll('[data-q]');
+    for (var qi = 0; qi < qs.length; qi++) qs[qi].classList.toggle('on', qs[qi].getAttribute('data-q') === window.__pvzQuality);
     f('device').textContent = deviceInfo();
     var errs = window.__pvzErrors || [];
     f('errors').textContent = errs.length ? errs.join('\n\n') : 'None';
@@ -208,6 +261,7 @@
     img.onerror = function () { avifOk = false; render(); };
     img.src = 'data:image/avif;base64,AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADybWV0YQAAAAAAAAAoaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAGxpYmF2aWYAAAAADnBpdG0AAAAAAAEAAAAeaWxvYwAAAABEAAABAAEAAAABAAABGgAAAB0AAAAoaWluZgAAAAAAAQAAABppbmZlAgAAAAABAABhdjAxQ29sb3IAAAAAamlwcnAAAABLaXBjbwAAABRpc3BlAAAAAAAAAAIAAAACAAAAEHBpeGkAAAAAAwgICAAAAAxhdjFDgQ0MAAAAABNjb2xybmNseAACAAIAAYAAAAAXaXBtYQAAAAAAAAABAAEEAQKDBAAAACVtZGF0EgAKCBgANogQEAwgMg8f8D///8WfhwB8+ErK42A=';
   })();
+  function isTouchUI() { return (navigator.maxTouchPoints || 0) > 0; }
   function deviceInfo() {
     var started = !!(window.cc && window.cc.director && window.cc.director.getScene && window.cc.director.getScene());
     return [
@@ -215,6 +269,7 @@
       'Screen ' + screen.width + '×' + screen.height + ' @' + (window.devicePixelRatio || 1) + 'x',
       'AVIF images: ' + (avifOk === null ? 'checking…' : avifOk ? 'supported' : 'NOT supported (needs iPadOS 16+)'),
       'Service worker: ' + (!swSupported ? 'unavailable' : navigator.serviceWorker.controller ? 'active ' + (swVersion || '') : 'not yet active'),
+      'Graphics: ' + (window.__pvzQuality || '?') + ' · canvas ' + (function () { var c = document.getElementById('GameCanvas'); return c ? c.width + '×' + c.height : '?'; })(),
       'Home Screen app: ' + (navigator.standalone || matchMedia('(display-mode: standalone)').matches ? 'yes' : 'no'),
       'Game engine started: ' + (started ? 'yes' : 'no')
     ].join('\n');

@@ -6,6 +6,11 @@
 - **Offline play**: a service worker caches everything the game loads; "Download all for offline" in the ⚙ panel fetches the whole game. Each deploy gets fresh caches automatically (the build stamps the commit SHA into `sw.js`).
 - **Cloud sync (Firebase)**: saves made offline upload when the iPad is back online. Off until `docs/sync/firebase-config.js` has real values.
 
+## Playing on iPad
+- **Tap** = click (tap a seed, then a square). **Drag** a seed/shovel/Plant Food onto the lawn and let go to drop it. **Sweep** over sun to collect.
+- **Two-finger tap** = right click (cancel seed, Zen Garden water). **Two-finger swipe / pinch** = mouse wheel.
+- Left-edge buttons: **⛶** full screen, **⚙** settings (saves, offline, **Graphics**: Smoothest / Balanced / Sharpest — Balanced is the default on touch screens; lower it if the iPad gets hot or laggy).
+
 ## Turning on cloud sync (5 minutes, needs your Google account)
 1. console.firebase.google.com → **Add project**.
 2. Click the **</>** icon to add a web app; copy the `firebaseConfig` values into `docs/sync/firebase-config.js`.

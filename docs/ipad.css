@@ -85,29 +85,38 @@ canvas {
   #pvz-rotate { display: flex; }
 }
 
-/* ---------- HUD pill (online dot + settings) ---------- */
+/* ---------- HUD (full screen + settings), left edge, out of the game's way ---------- */
 #pvz-hud {
   position: fixed;
-  top: calc(var(--pvz-safe-top) + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  left: calc(var(--pvz-safe-left) + 2px);
+  top: 50%;
+  transform: translateY(-50%);
   z-index: 2147482000;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
-  padding: 4px 10px;
+  opacity: 0.45;
+  touch-action: manipulation;
+}
+#pvz-hud:active, #pvz-hud.offline { opacity: 0.9; }
+.pvz-hud-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 4px 6px;
   border: 0;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.45);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.5);
   color: #fff;
   font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  opacity: 0.55;
   cursor: pointer;
   touch-action: manipulation;
 }
-#pvz-hud:active { opacity: 1; }
-#pvz-hud .pvz-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; }
-#pvz-hud.offline { opacity: 0.9; }
+.pvz-hud-btn[data-h="fs"] { font-size: 16px; }
+#pvz-hud .pvz-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; }
 #pvz-hud.offline .pvz-dot { background: #f87171; }
 #pvz-hud .pvz-hud-label:empty { display: none; }
 #pvz-hud .pvz-gear { font-size: 14px; }
@@ -210,3 +219,9 @@ canvas {
 }
 #pvz-panel .pvz-row span:last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; }
 #pvz-diag pre { text-align: left; }
+
+#pvz-panel .pvz-quality { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0 4px; }
+#pvz-panel .pvz-quality > span { opacity: 0.7; }
+#pvz-panel .pvz-seg { display: flex; gap: 4px; }
+#pvz-panel .pvz-seg button { min-height: 36px; padding: 6px 10px; background: rgba(255, 255, 255, 0.08); font-size: 13px; }
+#pvz-panel .pvz-seg button.on { background: #7ed957; color: #0d1a0d; }

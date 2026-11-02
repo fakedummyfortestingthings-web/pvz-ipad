@@ -14,7 +14,9 @@
 const SDK_VERSION = '10.14.1'; // keep in sync with FIREBASE_SDK in sw.js
 const SDK = `https://www.gstatic.com/firebasejs/${SDK_VERSION}`;
 
-const SYNC_INTERVAL_MS = 60_000;
+const SYNC_INTERVAL_MS = 5 * 60_000; // plus on app hide/show and reconnect
+// Downloaded community-level cache: re-downloadable, so kept local only (keeps uploads small).
+const CLOUD_EXCLUDE = /^PvZ2_GitHubLevels/;
 const MAX_UPLOAD_BYTES = 900 * 1024; // Firestore hard limit is 1 MiB per document
 const KEEP_BACKUPS = 3;
 const NET_TIMEOUT_MS = 15_000;
@@ -64,7 +66,7 @@ async function start() {
   const [appMod, authMod, fsMod] = await Promise.all([
     import(`${SDK}/firebase-app.js`),
     import(`${SDK}/firebase-auth.js`),
-    import(`${SDK}/firebase-firestore.js`)
+    import(`${SDK}/firebase-firestore-lite.js`) // REST only: no background connection
   ]);
   const { initializeApp, getApps } = appMod;
   const { getAuth, signInAnonymously, onAuthStateChanged } = authMod;
@@ -111,8 +113,17 @@ async function start() {
     await Promise.all(backups.slice(KEEP_BACKUPS).map((d) => deleteDoc(d.ref)));
   }
 
+  function cloudPart(data) {
+    const out = {};
+    Object.keys(data).sort().forEach((k) => { if (!CLOUD_EXCLUDE.test(k)) out[k] = data[k]; });
+    return out;
+  }
+
   async function applyRemote(remote) {
-    await save.applySnapshot(JSON.parse(remote.data), remote.updatedAt);
+    const merged = JSON.parse(remote.data);
+    const local = save.getSnapshot().data;
+    Object.keys(local).forEach((k) => { if (CLOUD_EXCLUDE.test(k)) merged[k] = local[k]; });
+    await save.applySnapshot(merged, remote.updatedAt);
     location.reload();
   }
 
@@ -127,7 +138,10 @@ async function start() {
       if (!uid) { setStatus('offline'); return; }
 
       const mainRef = doc(db, 'users', uid, 'saves', 'main');
-      const local = save.getSnapshot();
+      const snapAll = save.getSnapshot();
+      const cloudData = cloudPart(snapAll.data);
+      const cloudJson = JSON.stringify(cloudData);
+      const local = { ...snapAll, data: cloudData, json: cloudJson, hasData: cloudJson !== '{}' };
       const meta = save.getMeta();
       const snap = await withTimeout(getDoc(mainRef));
       const remote = snap.exists() ? snap.data() : null;
@@ -157,6 +171,11 @@ async function start() {
       } else if (!remote || local.updatedAt > remote.updatedAt) {
         // ----- Local is newer (or cloud empty) -----
         if (!local.hasData) { setStatus('synced'); return; }
+        if (remote && remote.data === local.json) { // only local-only keys changed
+          save.markSynced(local.updatedAt);
+          setStatus('synced');
+          return;
+        }
         const size = byteLength(local.json);
         if (size > MAX_UPLOAD_BYTES) {
           console.warn(`[PVZCloud] Save is ${(size / 1024).toFixed(0)} KB, over the ` +

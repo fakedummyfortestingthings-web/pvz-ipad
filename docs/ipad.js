@@ -11,6 +11,38 @@
 (function () {
   'use strict';
 
+  // ---------- Graphics quality (render resolution + antialias) ----------
+  // Drawing at the iPad's full 2x resolution with antialiasing keeps the GPU at 100%, and the
+  // iPad then heats up and throttles: smooth at first, laggier over time, worst on hordes.
+  //   smooth   = 1x, no antialias      balanced = 1.5x, no antialias (default on touch screens)
+  //   sharp    = native, antialias (original PC behaviour, default with mouse)
+  var QUALITY = { smooth: { scale: 1, aa: false }, balanced: { scale: 1.5, aa: false }, sharp: { scale: 0, aa: true } };
+  var isTouch = (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+  var quality = null;
+  try { quality = localStorage.getItem('__pvz_quality'); } catch (e) {}
+  if (!QUALITY[quality]) quality = isTouch ? 'balanced' : 'sharp';
+  var q = QUALITY[quality];
+  window.__pvzQuality = quality;
+  var realDpr = window.devicePixelRatio || 1;
+  if (q.scale && realDpr > q.scale) {
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function () { return q.scale; } });
+    } catch (e) {}
+  }
+  if (!q.aa && window.HTMLCanvasElement) {
+    var origGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+      if (this.id === 'GameCanvas' && /webgl/i.test(String(type))) {
+        var a = {};
+        if (attrs) for (var k in attrs) a[k] = attrs[k];
+        a.antialias = false;
+        a.powerPreference = 'high-performance';
+        return origGetContext.call(this, type, a);
+      }
+      return origGetContext.apply(this, arguments);
+    };
+  }
+
   // ---------- Error log (shown in the ⚙ panel; iPad has no easy console) ----------
   var errors = window.__pvzErrors = [];
   function logError(msg) {
@@ -34,7 +66,7 @@
   });
   var origConsoleError = console.error;
   console.error = function () {
-    try {
+    if (errors.length < 20) try {
       var parts = [];
       for (var i = 0; i < arguments.length; i++) {
         var a = arguments[i];
@@ -172,6 +204,7 @@
     }
 
     function mouse(type, x, y, button, buttons) {
+      lastSent = { x: x, y: y };
       var ev = new MouseEvent(type, {
         bubbles: true, cancelable: true, view: window, composed: true,
         clientX: x, clientY: y, screenX: x, screenY: y,
@@ -187,11 +220,46 @@
       }));
     }
 
+    // Touch screens report movement up to 120-240 times a second at uneven intervals. The game
+    // (and its level-map momentum) expects one smooth cursor update per frame, so moves and
+    // wheel steps are merged and sent once per animation frame.
+    var pendingMove = null, pendingWheel = null, rafId = 0, lastSent = null;
+    var STEP_PX = 40; // fill in long jumps so fast sweeps don't skip over sun
+    function schedule() { if (!rafId) rafId = requestAnimationFrame(flushInput); }
+    function flushInput() {
+      rafId = 0;
+      if (pendingMove) {
+        var m = pendingMove; pendingMove = null;
+        if (lastSent) {
+          var dist = Math.hypot(m.x - lastSent.x, m.y - lastSent.y);
+          var steps = Math.min(8, Math.floor(dist / STEP_PX));
+          for (var i = 1; i <= steps; i++) {
+            var f = i / (steps + 1);
+            mouse('mousemove', lastSent.x + (m.x - lastSent.x) * f, lastSent.y + (m.y - lastSent.y) * f, 0, m.buttons);
+          }
+        }
+        mouse('mousemove', m.x, m.y, 0, m.buttons);
+      }
+      if (pendingWheel) { var w = pendingWheel; pendingWheel = null; wheel(w.x, w.y, w.dx, w.dy); }
+    }
+    function flushNow() { if (rafId) { cancelAnimationFrame(rafId); rafId = 0; } flushInput(); }
+    function queueMove(x, y, buttons) { pendingMove = { x: x, y: y, buttons: buttons }; schedule(); }
+    function queueWheel(x, y, dx, dy) {
+      if (pendingWheel) { pendingWheel.x = x; pendingWheel.y = y; pendingWheel.dx += dx; pendingWheel.dy += dy; }
+      else pendingWheel = { x: x, y: y, dx: dx, dy: dy };
+      schedule();
+    }
+
     function press() {
       if (!primary || primary.pressed) return;
       clearTimeout(primary.timer);
       primary.pressed = true;
-      mouse('mousedown', primary.x, primary.y, 0, 1);
+      pendingMove = null;
+      // Press where the finger first touched (like clicking where the cursor was), then
+      // catch up to where it is now.
+      mouse('mousemove', primary.sx, primary.sy, 0, 0);
+      mouse('mousedown', primary.sx, primary.sy, 0, 1);
+      if (primary.x !== primary.sx || primary.y !== primary.sy) queueMove(primary.x, primary.y, 1);
     }
 
     function find(list, id) {
@@ -224,9 +292,18 @@
       }
       if (!primary && !multi) {
         var t = e.changedTouches[0];
-        primary = { id: t.identifier, x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, pressed: false };
+        var p = primary = { id: t.identifier, x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, pressed: false, ready: false, onReady: null };
         mouse('mousemove', t.clientX, t.clientY, 0, 0); // hover first, like a real cursor
-        primary.timer = setTimeout(press, PRESS_DELAY_MS);
+        // The game finds the lawn tile under the cursor once per frame: let two frames pass
+        // after the hover before any click, or a quick tap can land before the game "sees" it.
+        requestAnimationFrame(function () { requestAnimationFrame(function () {
+          p.ready = true;
+          if (p.onReady) { var f = p.onReady; p.onReady = null; f(); }
+        }); });
+        primary.timer = setTimeout(function () {
+          if (primary !== p) return;
+          if (p.ready) press(); else p.onReady = function () { if (primary === p) press(); };
+        }, PRESS_DELAY_MS);
         return;
       }
     }
@@ -244,9 +321,9 @@
         multi.moved += Math.abs(dx) + Math.abs(dy) + Math.abs(dd);
         if (multi.moved >= TAP_SLOP_PX) {
           if (Math.abs(dd) > Math.abs(dy) && Math.abs(dd) > Math.abs(dx)) {
-            wheel(st.mid.x, st.mid.y, 0, -dd * WHEEL_PER_PX);          // pinch out = zoom in
+            queueWheel(st.mid.x, st.mid.y, 0, -dd * WHEEL_PER_PX);          // pinch out = zoom in
           } else if (dx || dy) {
-            wheel(st.mid.x, st.mid.y, -dx * WHEEL_PER_PX, -dy * WHEEL_PER_PX); // natural scrolling
+            queueWheel(st.mid.x, st.mid.y, -dx * WHEEL_PER_PX, -dy * WHEEL_PER_PX); // natural scrolling
           }
         }
         multi.lastMid = st.mid; multi.lastDist = st.dist;
@@ -258,7 +335,7 @@
       if (!t) return;
       primary.x = t.clientX; primary.y = t.clientY;
       if (!primary.pressed && Math.hypot(t.clientX - primary.sx, t.clientY - primary.sy) > MOVE_SLOP_PX) press();
-      mouse('mousemove', t.clientX, t.clientY, 0, primary.pressed ? 1 : 0);
+      else queueMove(t.clientX, t.clientY, primary.pressed ? 1 : 0);
     }
 
     function onEnd(e) {
@@ -267,6 +344,7 @@
 
       if (multi) {
         if (e.touches.length === 0) {
+          flushNow();
           var quick = Date.now() - multi.start <= TAP_MAX_MS;
           if (quick && multi.moved < TAP_SLOP_PX && e.type === 'touchend') {
             mouse('mousemove', multi.rx, multi.ry, 0, 0);
@@ -283,6 +361,7 @@
       if (!t) return;
       if (e.type === 'touchcancel') {
         clearTimeout(primary.timer);
+        pendingMove = null;
         if (primary.pressed) {
           // Release far outside so nothing gets clicked by a cancelled touch.
           mouse('mousemove', -10000, -10000, 0, 1);
@@ -292,7 +371,23 @@
         return;
       }
       primary.x = t.clientX; primary.y = t.clientY;
+      if (!primary.pressed && !primary.ready) {
+        // Very quick tap: finish it once the game has seen the cursor arrive.
+        var tp = primary;
+        clearTimeout(tp.timer);
+        primary = null;
+        tp.onReady = function () {
+          if (primary || multi) return; // a new touch started meanwhile
+          primary = tp; press(); flushNow();
+          mouse('mouseup', tp.x, tp.y, 0, 0);
+          primary = null;
+        };
+        return;
+      }
+      var wasPressed = primary.pressed;
       press();
+      if (wasPressed) queueMove(t.clientX, t.clientY, 1);
+      flushNow();
       mouse('mouseup', t.clientX, t.clientY, 0, 0);
       var dragged = Math.hypot(t.clientX - primary.sx, t.clientY - primary.sy) > DROP_MIN_PX;
       primary = null;

@@ -125,6 +125,201 @@
     if (document.visibilityState === 'visible') unlockAudio();
   });
 
+  // ---------- Touch → mouse bridge ----------
+  // The game was built for PC: seed packets, planting, sun, shovel etc. listen for MOUSE
+  // events, which the engine never produces from finger touches. Here touches on the game
+  // canvas are turned into the mouse events a PC would send, and the original touch events
+  // are stopped so nothing is handled twice (the engine already turns mouse into touch for
+  // its own buttons and scroll views).
+  //   1 finger: left button (tap = click, drag = drag)
+  //   2-finger tap: right button   ·   2-finger swipe / pinch: mouse wheel
+  (function () {
+    var PRESS_DELAY_MS = 60;   // wait this long for a second finger before pressing
+    var MOVE_SLOP_PX = 6;      // moving further than this presses immediately
+    var TAP_SLOP_PX = 15;      // 2-finger tap must move less than this
+    var TAP_MAX_MS = 500;
+    var WHEEL_PER_PX = 2;      // wheel delta per finger pixel
+    var DROP_MIN_PX = 30;      // a drag this long while holding a seed/shovel drops it on release
+
+    // Is the player holding something (seed, shovel, Plant Food, Zen Garden glove/cart)?
+    // The PC game places items with a click; this lets a drag-and-release place them too.
+    var holders = null, holdersScene = null;
+    function holdingSomething() {
+      var cc = window.cc;
+      if (!cc || !cc.director || !cc.Component) return false;
+      var scene = cc.director.getScene();
+      if (!scene) return false;
+      if (scene !== holdersScene || !holders || holders.some(function (c) { return !c.isValid; })) {
+        holdersScene = scene;
+        holders = scene.getComponentsInChildren(cc.Component).filter(function (c) {
+          return c && (c.plantInHandLayer || c.gloveInHand || c.cartInHand);
+        });
+      }
+      return holders.some(function (c) {
+        var layer = c.plantInHandLayer;
+        if (layer && layer.children && layer.children.some(function (n) { return n.active; })) return true;
+        return !!((c.gloveInHand && c.gloveInHand.active) || (c.cartInHand && c.cartInHand.active));
+      });
+    }
+
+    var canvas = null;
+    var primary = null;        // { id, x, y, sx, sy, pressed, timer }
+    var multi = null;          // { start, moved, lastMid, lastDist, rx, ry }
+
+    function isGameTarget(e) {
+      if (!canvas || !canvas.isConnected) canvas = document.getElementById('GameCanvas');
+      return !!canvas && e.target === canvas;
+    }
+
+    function mouse(type, x, y, button, buttons) {
+      var ev = new MouseEvent(type, {
+        bubbles: true, cancelable: true, view: window, composed: true,
+        clientX: x, clientY: y, screenX: x, screenY: y,
+        button: button, buttons: buttons
+      });
+      canvas.dispatchEvent(ev);
+    }
+
+    function wheel(x, y, dx, dy) {
+      canvas.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true, cancelable: true, view: window,
+        clientX: x, clientY: y, deltaX: dx, deltaY: dy, deltaMode: 0
+      }));
+    }
+
+    function press() {
+      if (!primary || primary.pressed) return;
+      clearTimeout(primary.timer);
+      primary.pressed = true;
+      mouse('mousedown', primary.x, primary.y, 0, 1);
+    }
+
+    function find(list, id) {
+      for (var i = 0; i < list.length; i++) if (list[i].identifier === id) return list[i];
+      return null;
+    }
+
+    function twoFingerState(touches) {
+      var a = touches[0], b = touches[1];
+      return {
+        mid: { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 },
+        dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      };
+    }
+
+    function onStart(e) {
+      if (!isGameTarget(e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      unlockAudio(); unlockAudioElements();
+
+      // Two fingers landing together (or a second finger before the first pressed) = 2-finger gesture.
+      if (!multi && e.touches.length >= 2 && (!primary || !primary.pressed)) {
+        if (primary) clearTimeout(primary.timer);
+        var st0 = twoFingerState(e.touches);
+        var first = primary ? { x: primary.sx, y: primary.sy } : { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        multi = { start: Date.now(), moved: 0, lastMid: st0.mid, lastDist: st0.dist, rx: first.x, ry: first.y };
+        primary = null;
+        return;
+      }
+      if (!primary && !multi) {
+        var t = e.changedTouches[0];
+        primary = { id: t.identifier, x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, pressed: false };
+        mouse('mousemove', t.clientX, t.clientY, 0, 0); // hover first, like a real cursor
+        primary.timer = setTimeout(press, PRESS_DELAY_MS);
+        return;
+      }
+    }
+
+    function onMove(e) {
+      if (!isGameTarget(e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      if (multi) {
+        if (e.touches.length < 2) return;
+        var st = twoFingerState(e.touches);
+        var dx = st.mid.x - multi.lastMid.x, dy = st.mid.y - multi.lastMid.y;
+        var dd = st.dist - multi.lastDist;
+        multi.moved += Math.abs(dx) + Math.abs(dy) + Math.abs(dd);
+        if (multi.moved >= TAP_SLOP_PX) {
+          if (Math.abs(dd) > Math.abs(dy) && Math.abs(dd) > Math.abs(dx)) {
+            wheel(st.mid.x, st.mid.y, 0, -dd * WHEEL_PER_PX);          // pinch out = zoom in
+          } else if (dx || dy) {
+            wheel(st.mid.x, st.mid.y, -dx * WHEEL_PER_PX, -dy * WHEEL_PER_PX); // natural scrolling
+          }
+        }
+        multi.lastMid = st.mid; multi.lastDist = st.dist;
+        return;
+      }
+
+      if (!primary) return;
+      var t = find(e.changedTouches, primary.id);
+      if (!t) return;
+      primary.x = t.clientX; primary.y = t.clientY;
+      if (!primary.pressed && Math.hypot(t.clientX - primary.sx, t.clientY - primary.sy) > MOVE_SLOP_PX) press();
+      mouse('mousemove', t.clientX, t.clientY, 0, primary.pressed ? 1 : 0);
+    }
+
+    function onEnd(e) {
+      if (!isGameTarget(e) && !primary && !multi) return;
+      if (isGameTarget(e)) { e.preventDefault(); e.stopImmediatePropagation(); }
+
+      if (multi) {
+        if (e.touches.length === 0) {
+          var quick = Date.now() - multi.start <= TAP_MAX_MS;
+          if (quick && multi.moved < TAP_SLOP_PX && e.type === 'touchend') {
+            mouse('mousemove', multi.rx, multi.ry, 0, 0);
+            mouse('mousedown', multi.rx, multi.ry, 2, 2);
+            mouse('mouseup', multi.rx, multi.ry, 2, 0);
+          }
+          multi = null;
+        }
+        return;
+      }
+
+      if (!primary) return;
+      var t = find(e.changedTouches, primary.id);
+      if (!t) return;
+      if (e.type === 'touchcancel') {
+        clearTimeout(primary.timer);
+        if (primary.pressed) {
+          // Release far outside so nothing gets clicked by a cancelled touch.
+          mouse('mousemove', -10000, -10000, 0, 1);
+          mouse('mouseup', -10000, -10000, 0, 0);
+        }
+        primary = null;
+        return;
+      }
+      primary.x = t.clientX; primary.y = t.clientY;
+      press();
+      mouse('mouseup', t.clientX, t.clientY, 0, 0);
+      var dragged = Math.hypot(t.clientX - primary.sx, t.clientY - primary.sy) > DROP_MIN_PX;
+      primary = null;
+      if (dragged) {
+        // The game works out the tile under the cursor once per frame, so hover first and
+        // click a couple of frames later, the way a real mouse click arrives.
+        var x = t.clientX, y = t.clientY;
+        mouse('mousemove', x, y, 0, 0);
+        setTimeout(function () {
+          if (primary || multi) return; // a new touch already started
+          var held = false;
+          try { held = holdingSomething(); } catch (err) {}
+          if (!held) return;
+          mouse('mousemove', x, y, 0, 0);
+          mouse('mousedown', x, y, 0, 1);
+          mouse('mouseup', x, y, 0, 0);
+        }, 50);
+      }
+    }
+
+    var opts = { capture: true, passive: false };
+    window.addEventListener('touchstart', onStart, opts);
+    window.addEventListener('touchmove', onMove, opts);
+    window.addEventListener('touchend', onEnd, opts);
+    window.addEventListener('touchcancel', onEnd, opts);
+  })();
+
   // ---------- Zoom / gesture blocking ----------
   document.addEventListener('gesturestart', function (e) { e.preventDefault(); }, { passive: false });
   document.addEventListener('gesturechange', function (e) { e.preventDefault(); }, { passive: false });

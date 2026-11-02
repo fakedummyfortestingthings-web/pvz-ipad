@@ -196,6 +196,83 @@
       });
     }
 
+    // ---- World map swiping. The world picker (one icon per world) only changes world on a
+    // tap or mouse-wheel step, and the level map only scrolls when a drag starts on empty
+    // sea (islands/level buttons swallow the drag). On those two screens a sideways swipe is
+    // handled here directly; taps still click as before.
+    var SWIPE_START_PX = 12;   // sideways movement that starts a swipe
+    var SWIPE_HOLD_MS = 250;   // on swipe screens, a finger held this long presses instead
+    var CHOOSER_STEP_PX = 260; // world picker: one world per this much swipe (short swipes: 1)
+    var LATE_SWIPE_MS = 800;   // a sideways swipe this soon after touching still counts
+    var mapCache = { scene: null, mgr: null };
+    function mapManager() {
+      var cc = window.cc;
+      if (!cc || !cc.director || !cc.Component) return null;
+      var scene = cc.director.getScene();
+      if (!scene) return null;
+      if (mapCache.scene !== scene || (mapCache.mgr && !mapCache.mgr.isValid)) {
+        mapCache.scene = scene;
+        mapCache.mgr = null;
+        var all = scene.getComponentsInChildren(cc.Component);
+        for (var i = 0; i < all.length; i++) {
+          var c = all[i];
+          if (c && c.WMSlot && c.WMChooserSlot && typeof c.TouchMove === 'function') { mapCache.mgr = c; break; }
+        }
+      }
+      return mapCache.mgr;
+    }
+    function swipeTarget() {
+      try {
+        var mgr = mapManager();
+        if (!mgr || !mgr.enabledInHierarchy) return null;
+        var cc = window.cc, i, list;
+        if (mgr.WMChooserSlot && mgr.WMChooserSlot.node && mgr.WMChooserSlot.node.activeInHierarchy) {
+          list = mgr.WMChooserSlot.getComponentsInChildren(cc.Component);
+          for (i = 0; i < list.length; i++) {
+            var ch = list[i];
+            if (ch.icons && ch.mid && typeof ch.moveBy === 'function' && ch.node.activeInHierarchy) {
+              return ch.entering ? null : { kind: 'chooser', c: ch };
+            }
+          }
+        }
+        if (mgr.WMSlot && mgr.WMSlot.node && mgr.WMSlot.node.activeInHierarchy) {
+          list = mgr.WMSlot.getComponentsInChildren(cc.Component);
+          for (i = 0; i < list.length; i++) {
+            if (list[i].levelIslands && typeof list[i].moveBy === 'function' && list[i].node.activeInHierarchy) {
+              return { kind: 'map', c: mgr };
+            }
+          }
+        }
+      } catch (e) {}
+      return null;
+    }
+    var pendingMapDx = 0, mapTarget = null;
+    function flushMapSwipe() {
+      if (!pendingMapDx || !mapTarget) return;
+      var d = pendingMapDx * ((window.cc && window.cc.screen && window.cc.screen.devicePixelRatio) || window.devicePixelRatio || 1);
+      pendingMapDx = 0;
+      // Same call the game makes for a mouse drag on the sea, so its own momentum applies.
+      try { mapTarget.TouchMove({ preventSwallow: false, getDeltaX: function () { return d; } }); } catch (e) {}
+    }
+    function swipeMove(p) {
+      var dx = p.x - p.lastSwipeX;
+      p.lastSwipeX = p.x;
+      if (p.swipe.kind === 'map') {
+        mapTarget = p.swipe.c;
+        pendingMapDx += dx;
+        schedule();
+      } else {
+        var total = p.x - p.sx;
+        var want = -Math.sign(total) * Math.floor(Math.abs(total) / CHOOSER_STEP_PX);
+        if (want !== p.steps) { try { p.swipe.c.moveBy(want - p.steps); } catch (e) {} p.steps = want; }
+      }
+    }
+    function swipeEnd(p) {
+      if (p.swipe.kind === 'map') { flushNow(); return; }
+      var total = p.x - p.sx;
+      if (p.steps === 0 && Math.abs(total) > 40) { try { p.swipe.c.moveBy(-Math.sign(total)); } catch (e) {} }
+    }
+
     var canvas = null;
     var primary = null;        // the finger acting as the mouse
     var multi = null;          // 2-finger gesture { a, b (touch ids), start, moved, lastMid, lastDist, rx, ry }
@@ -243,6 +320,7 @@
         mouse('mousemove', m.x, m.y, 0, m.buttons);
       }
       if (pendingWheel) { var w = pendingWheel; pendingWheel = null; wheel(w.x, w.y, w.dx, w.dy); }
+      flushMapSwipe();
     }
     function flushNow() { if (rafId) { cancelAnimationFrame(rafId); rafId = 0; } flushInput(); }
     function queueMove(x, y, buttons) { pendingMove = { x: x, y: y, buttons: buttons }; schedule(); }
@@ -283,8 +361,9 @@
     function settleOwed() { if (owed) { var f = owed; owed = null; f(); } }
 
     function releaseOffscreen() {
-      // Let go far outside the game so nothing gets clicked by an interrupted touch.
-      mouse('mousemove', -10000, -10000, 0, 1);
+      // Let go outside the game: the engine turns a release outside the pressed button into a
+      // "cancel", so nothing gets clicked. (No move first: that would yank a dragged map.)
+      pendingMove = null;
       mouse('mouseup', -10000, -10000, 0, 0);
     }
 
@@ -363,7 +442,8 @@
       // New primary finger. Other fingers already resting on the screen don't matter.
       var t = ch[0];
       var p = primary = { id: t.identifier, t0: now, x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY,
-                          pressed: false, ready: false, onReady: null, timer: 0 };
+                          pressed: false, ready: false, onReady: null, timer: 0,
+                          swipe: swipeTarget(), swiping: false, lastSwipeX: t.clientX, steps: 0 };
       mouse('mousemove', t.clientX, t.clientY, 0, 0); // hover first, like a real cursor
       // The game finds the lawn tile under the cursor once per frame: let two frames pass
       // after the hover before any click, or a quick tap can land before the game "sees" it.
@@ -374,7 +454,7 @@
       p.timer = setTimeout(function () {
         if (primary !== p) return;
         if (p.ready) press(); else p.onReady = function () { if (primary === p) press(); };
-      }, PRESS_DELAY_MS);
+      }, p.swipe ? SWIPE_HOLD_MS : PRESS_DELAY_MS);
     }
 
     function onMove(e) {
@@ -404,7 +484,34 @@
       var t = find(e.changedTouches, primary.id);
       if (!t) return;
       primary.x = t.clientX; primary.y = t.clientY;
-      if (!primary.pressed && Math.hypot(t.clientX - primary.sx, t.clientY - primary.sy) > MOVE_SLOP_PX) press();
+      if (primary.swiping) { swipeMove(primary); return; }
+      var mdx = t.clientX - primary.sx, mdy = t.clientY - primary.sy;
+      if (primary.pressed && primary.swipe && Date.now() - primary.t0 < LATE_SWIPE_MS &&
+          Math.abs(mdx) > SWIPE_START_PX && Math.abs(mdx) > 1.2 * Math.abs(mdy)) {
+        // Pressed already (finger held a moment, or a slow frame delayed the movement) but it
+        // is clearly a sideways swipe: cancel the press without clicking and swipe instead.
+        // Whatever the game already scrolled from the press-drag counts; continue from there.
+        var already = lastSent ? lastSent.x : primary.sx;
+        releaseOffscreen();
+        primary.pressed = false;
+        primary.swiping = true;
+        primary.lastSwipeX = already;
+        swipeMove(primary);
+        return;
+      }
+      if (!primary.pressed && primary.swipe) {
+        if (Math.abs(mdx) > SWIPE_START_PX && Math.abs(mdx) > 1.2 * Math.abs(mdy)) {
+          clearTimeout(primary.timer);
+          primary.onReady = null;
+          primary.swiping = true;
+          primary.lastSwipeX = primary.sx;
+          swipeMove(primary);
+        } else if (Math.abs(mdy) > SWIPE_START_PX) {
+          press();
+        }
+        return;
+      }
+      if (!primary.pressed && Math.hypot(mdx, mdy) > MOVE_SLOP_PX) press();
       else queueMove(t.clientX, t.clientY, primary.pressed ? 1 : 0);
     }
 
@@ -429,6 +536,7 @@
       if (e.type === 'touchcancel') { cancelPrimary(); return; }
 
       primary.x = t.clientX; primary.y = t.clientY;
+      if (primary.swiping) { swipeMove(primary); swipeEnd(primary); primary = null; return; }
       if (!primary.pressed && !primary.ready) {
         // Very quick tap: finish it once the game has seen the cursor arrive (or right away if
         // another touch starts first).
@@ -486,6 +594,31 @@
     window.addEventListener('touchmove', onMove, opts);
     window.addEventListener('touchend', onEnd, opts);
     window.addEventListener('touchcancel', onEnd, opts);
+  })();
+
+  // ---------- Touch scrolling for wheel-only lists ----------
+  // Some lists (Settings and others) use "ScrollViewWithoutTouchevent", a scroll view with
+  // dragging switched off because on PC you scroll it with the mouse wheel. On touch screens
+  // the normal finger-drag scrolling (with flick momentum) is switched back on.
+  if (isTouch) (function () {
+    var tries = 0;
+    var iv = setInterval(function () {
+      var cc = window.cc;
+      if (++tries > 1200) { clearInterval(iv); return; }
+      if (!cc || !cc.js || !cc.ScrollView || !cc.js.getClassByName) return;
+      var C = cc.js.getClassByName('ScrollViewWithoutTouchevent');
+      if (!C) return;
+      clearInterval(iv);
+      ['_onTouchBegan', '_onTouchMoved', '_onTouchEnded', '_onTouchCancelled'].forEach(function (k) {
+        if (Object.prototype.hasOwnProperty.call(C.prototype, k)) delete C.prototype[k];
+      });
+      try {
+        var scene = cc.director && cc.director.getScene && cc.director.getScene();
+        if (scene) scene.getComponentsInChildren(C).forEach(function (sv) {
+          if (sv.enabledInHierarchy) { try { sv._unregisterEvent(); sv._registerEvent(); } catch (e) {} }
+        });
+      } catch (e) {}
+    }, 100);
   })();
 
   // ---------- Zoom / gesture blocking ----------

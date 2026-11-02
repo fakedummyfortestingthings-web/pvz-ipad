@@ -166,7 +166,9 @@
   //   1 finger: left button (tap = click, drag = drag)
   //   2-finger tap: right button   ·   2-finger swipe / pinch: mouse wheel
   (function () {
-    var PRESS_DELAY_MS = 60;   // wait this long for a second finger before pressing
+    var PRESS_DELAY_MS = 60;   // a held finger presses after this (if no second finger joined)
+    var TWO_FINGER_WINDOW_MS = 120; // a second finger within this = 2-finger gesture
+    var RESTING_MS = 300;      // a finger held still this long yields to a new finger
     var MOVE_SLOP_PX = 6;      // moving further than this presses immediately
     var TAP_SLOP_PX = 15;      // 2-finger tap must move less than this
     var TAP_MAX_MS = 500;
@@ -195,8 +197,8 @@
     }
 
     var canvas = null;
-    var primary = null;        // { id, x, y, sx, sy, pressed, timer }
-    var multi = null;          // { start, moved, lastMid, lastDist, rx, ry }
+    var primary = null;        // the finger acting as the mouse
+    var multi = null;          // 2-finger gesture { a, b (touch ids), start, moved, lastMid, lastDist, rx, ry }
 
     function isGameTarget(e) {
       if (!canvas || !canvas.isConnected) canvas = document.getElementById('GameCanvas');
@@ -267,12 +269,57 @@
       return null;
     }
 
-    function twoFingerState(touches) {
-      var a = touches[0], b = touches[1];
+    function pairState(a, b) {
       return {
         mid: { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 },
         dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
       };
+    }
+
+    // Work still owed to the game when a new touch begins (a very quick tap waiting for the
+    // game to see the cursor, or a drag-and-drop click). It runs right away instead of being
+    // dropped, so rapid taps never get lost.
+    var owed = null;
+    function settleOwed() { if (owed) { var f = owed; owed = null; f(); } }
+
+    function releaseOffscreen() {
+      // Let go far outside the game so nothing gets clicked by an interrupted touch.
+      mouse('mousemove', -10000, -10000, 0, 1);
+      mouse('mouseup', -10000, -10000, 0, 0);
+    }
+
+    function cancelPrimary() {
+      if (!primary) return;
+      clearTimeout(primary.timer);
+      primary.onReady = null;
+      pendingMove = null;
+      if (primary.pressed) releaseOffscreen();
+      primary = null;
+    }
+
+    // Recover from touches the system never finished (app switched, notification, system
+    // swipe, rotation): anything we track that is no longer on the screen is released.
+    function dropStale(e) {
+      if (primary && !find(e.touches, primary.id)) cancelPrimary();
+      if (multi && (!find(e.touches, multi.a) || !find(e.touches, multi.b))) multi = null;
+    }
+    function resetAll() {
+      owed = null;
+      cancelPrimary();
+      multi = null;
+      pendingWheel = null;
+    }
+
+    function startMulti(a, b, rx, ry) {
+      var st = pairState(a, b);
+      multi = { a: a.identifier, b: b.identifier, start: Date.now(), moved: 0,
+                lastMid: st.mid, lastDist: st.dist, rx: rx, ry: ry };
+    }
+
+    function rightClick(x, y) {
+      mouse('mousemove', x, y, 0, 0);
+      mouse('mousedown', x, y, 2, 2);
+      mouse('mouseup', x, y, 2, 0);
     }
 
     function onStart(e) {
@@ -280,32 +327,54 @@
       e.preventDefault();
       e.stopImmediatePropagation();
       unlockAudio(); unlockAudioElements();
+      dropStale(e);
+      var now = Date.now();
+      var ch = e.changedTouches;
 
-      // Two fingers landing together (or a second finger before the first pressed) = 2-finger gesture.
-      if (!multi && e.touches.length >= 2 && (!primary || !primary.pressed)) {
-        if (primary) clearTimeout(primary.timer);
-        var st0 = twoFingerState(e.touches);
-        var first = primary ? { x: primary.sx, y: primary.sy } : { x: e.touches[0].clientX, y: e.touches[0].clientY };
-        multi = { start: Date.now(), moved: 0, lastMid: st0.mid, lastDist: st0.dist, rx: first.x, ry: first.y };
-        primary = null;
+      if (multi) return; // extra fingers during a 2-finger gesture are ignored
+
+      if (primary && primary.pressed && now - primary.t0 > RESTING_MS &&
+          Math.hypot(primary.x - primary.sx, primary.y - primary.sy) <= MOVE_SLOP_PX) {
+        // The current finger has been sitting still (a thumb resting on the glass while
+        // holding the iPad): let it go without clicking, and the new finger takes over.
+        cancelPrimary();
+      }
+
+      if (primary) {
+        // A second finger shortly after the first (before it pressed) = 2-finger gesture.
+        // Other extra fingers while one is actively dragging are ignored.
+        if (!primary.pressed && now - primary.t0 <= TWO_FINGER_WINDOW_MS) {
+          var first = find(e.touches, primary.id);
+          if (first && ch[0]) {
+            var rx = primary.sx, ry = primary.sy;
+            clearTimeout(primary.timer);
+            primary.onReady = null;
+            primary = null;
+            pendingMove = null;
+            startMulti(first, ch[0], rx, ry);
+          }
+        }
         return;
       }
-      if (!primary && !multi) {
-        var t = e.changedTouches[0];
-        var p = primary = { id: t.identifier, x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, pressed: false, ready: false, onReady: null };
-        mouse('mousemove', t.clientX, t.clientY, 0, 0); // hover first, like a real cursor
-        // The game finds the lawn tile under the cursor once per frame: let two frames pass
-        // after the hover before any click, or a quick tap can land before the game "sees" it.
-        requestAnimationFrame(function () { requestAnimationFrame(function () {
-          p.ready = true;
-          if (p.onReady) { var f = p.onReady; p.onReady = null; f(); }
-        }); });
-        primary.timer = setTimeout(function () {
-          if (primary !== p) return;
-          if (p.ready) press(); else p.onReady = function () { if (primary === p) press(); };
-        }, PRESS_DELAY_MS);
-        return;
-      }
+
+      settleOwed();
+      if (ch.length >= 2) { startMulti(ch[0], ch[1], ch[0].clientX, ch[0].clientY); return; }
+
+      // New primary finger. Other fingers already resting on the screen don't matter.
+      var t = ch[0];
+      var p = primary = { id: t.identifier, t0: now, x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY,
+                          pressed: false, ready: false, onReady: null, timer: 0 };
+      mouse('mousemove', t.clientX, t.clientY, 0, 0); // hover first, like a real cursor
+      // The game finds the lawn tile under the cursor once per frame: let two frames pass
+      // after the hover before any click, or a quick tap can land before the game "sees" it.
+      requestAnimationFrame(function () { requestAnimationFrame(function () {
+        p.ready = true;
+        if (p.onReady) { var f = p.onReady; p.onReady = null; f(); }
+      }); });
+      p.timer = setTimeout(function () {
+        if (primary !== p) return;
+        if (p.ready) press(); else p.onReady = function () { if (primary === p) press(); };
+      }, PRESS_DELAY_MS);
     }
 
     function onMove(e) {
@@ -314,14 +383,15 @@
       e.stopImmediatePropagation();
 
       if (multi) {
-        if (e.touches.length < 2) return;
-        var st = twoFingerState(e.touches);
+        var a = find(e.touches, multi.a), b = find(e.touches, multi.b);
+        if (!a || !b) return;
+        var st = pairState(a, b);
         var dx = st.mid.x - multi.lastMid.x, dy = st.mid.y - multi.lastMid.y;
         var dd = st.dist - multi.lastDist;
         multi.moved += Math.abs(dx) + Math.abs(dy) + Math.abs(dd);
         if (multi.moved >= TAP_SLOP_PX) {
           if (Math.abs(dd) > Math.abs(dy) && Math.abs(dd) > Math.abs(dx)) {
-            queueWheel(st.mid.x, st.mid.y, 0, -dd * WHEEL_PER_PX);          // pinch out = zoom in
+            queueWheel(st.mid.x, st.mid.y, 0, -dd * WHEEL_PER_PX);                  // pinch out = zoom in
           } else if (dx || dy) {
             queueWheel(st.mid.x, st.mid.y, -dx * WHEEL_PER_PX, -dy * WHEEL_PER_PX); // natural scrolling
           }
@@ -339,51 +409,44 @@
     }
 
     function onEnd(e) {
-      if (!isGameTarget(e) && !primary && !multi) return;
-      if (isGameTarget(e)) { e.preventDefault(); e.stopImmediatePropagation(); }
+      var onGame = isGameTarget(e);
+      if (!onGame && !primary && !multi) return;
+      if (onGame) { e.preventDefault(); e.stopImmediatePropagation(); }
 
       if (multi) {
-        if (e.touches.length === 0) {
-          flushNow();
-          var quick = Date.now() - multi.start <= TAP_MAX_MS;
-          if (quick && multi.moved < TAP_SLOP_PX && e.type === 'touchend') {
-            mouse('mousemove', multi.rx, multi.ry, 0, 0);
-            mouse('mousedown', multi.rx, multi.ry, 2, 2);
-            mouse('mouseup', multi.rx, multi.ry, 2, 0);
-          }
-          multi = null;
-        }
+        // Finish as soon as either finger lifts, so a finger left on the glass can't freeze it.
+        if (find(e.touches, multi.a) && find(e.touches, multi.b)) return;
+        flushNow();
+        var m = multi;
+        multi = null;
+        if (e.type === 'touchend' && Date.now() - m.start <= TAP_MAX_MS && m.moved < TAP_SLOP_PX) rightClick(m.rx, m.ry);
         return;
       }
 
       if (!primary) return;
       var t = find(e.changedTouches, primary.id);
       if (!t) return;
-      if (e.type === 'touchcancel') {
-        clearTimeout(primary.timer);
-        pendingMove = null;
-        if (primary.pressed) {
-          // Release far outside so nothing gets clicked by a cancelled touch.
-          mouse('mousemove', -10000, -10000, 0, 1);
-          mouse('mouseup', -10000, -10000, 0, 0);
-        }
-        primary = null;
-        return;
-      }
+      if (e.type === 'touchcancel') { cancelPrimary(); return; }
+
       primary.x = t.clientX; primary.y = t.clientY;
       if (!primary.pressed && !primary.ready) {
-        // Very quick tap: finish it once the game has seen the cursor arrive.
+        // Very quick tap: finish it once the game has seen the cursor arrive (or right away if
+        // another touch starts first).
         var tp = primary;
         clearTimeout(tp.timer);
         primary = null;
-        tp.onReady = function () {
-          if (primary || multi) return; // a new touch started meanwhile
+        var finishTap = function () {
+          if (owed !== finishTap) return;
+          owed = null;
           primary = tp; press(); flushNow();
           mouse('mouseup', tp.x, tp.y, 0, 0);
           primary = null;
         };
+        owed = finishTap;
+        tp.onReady = finishTap;
         return;
       }
+
       var wasPressed = primary.pressed;
       press();
       if (wasPressed) queueMove(t.clientX, t.clientY, 1);
@@ -392,21 +455,31 @@
       var dragged = Math.hypot(t.clientX - primary.sx, t.clientY - primary.sy) > DROP_MIN_PX;
       primary = null;
       if (dragged) {
+        // Drag-and-drop: if a seed/shovel/Plant Food is held, click where the finger lifted.
         // The game works out the tile under the cursor once per frame, so hover first and
         // click a couple of frames later, the way a real mouse click arrives.
         var x = t.clientX, y = t.clientY;
         mouse('mousemove', x, y, 0, 0);
-        setTimeout(function () {
-          if (primary || multi) return; // a new touch already started
+        var drop = function () {
+          if (owed !== drop) return;
+          owed = null;
           var held = false;
           try { held = holdingSomething(); } catch (err) {}
           if (!held) return;
           mouse('mousemove', x, y, 0, 0);
           mouse('mousedown', x, y, 0, 1);
           mouse('mouseup', x, y, 0, 0);
-        }, 50);
+        };
+        owed = drop;
+        setTimeout(drop, 50);
       }
     }
+
+    // Start fresh whenever the game is interrupted mid-touch.
+    window.addEventListener('blur', resetAll);
+    window.addEventListener('pagehide', resetAll);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') resetAll(); });
+    window.addEventListener('orientationchange', resetAll);
 
     var opts = { capture: true, passive: false };
     window.addEventListener('touchstart', onStart, opts);

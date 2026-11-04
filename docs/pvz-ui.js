@@ -37,7 +37,7 @@
       console.warn('[PVZ] Service worker registration failed:', e);
     });
     navigator.serviceWorker.addEventListener('message', function (e) {
-      if (e.data && e.data.type === 'VERSION') { swVersion = e.data.version; render(); warmCache(); }
+      if (e.data && e.data.type === 'VERSION') { swVersion = e.data.version; render(); }
     });
     navigator.serviceWorker.addEventListener('controllerchange', function () {
       askVersion(navigator.serviceWorker.controller);
@@ -47,48 +47,79 @@
   }
 
   // ---------- Warm cache ----------
-  // On the very first visit the worker starts controlling the page only after the game has
-  // loaded, so those files never passed through it. Cache everything this page already
-  // loaded, so the next launch works offline even without "Download all".
-  // Later visits are already cached as files load, so skip the extra work (it caused hitches).
-  var firstVisit = swSupported && !navigator.serviceWorker.controller;
-  var warming = false;
-  function warmCache() {
-    if (!firstVisit || warming || !swVersion || !navigator.serviceWorker.controller || !window.caches) return;
-    warming = true;
-    var origin = location.origin;
-    var seen = {};
-    var urls = [location.href.split('#')[0]];
-    (performance.getEntriesByType ? performance.getEntriesByType('resource') : []).forEach(function (e) {
-      if (e.name.indexOf(origin + '/') !== 0) return;
-      if (/\/__\/|asset-list\.json|sw\.js(\?|$)/.test(e.name)) return;
-      urls.push(e.name);
-    });
-    urls = urls.filter(function (u) { if (seen[u]) return false; seen[u] = true; return true; });
-    caches.open('pvz-assets-' + swVersion).then(function (cache) {
-      var i = 0;
-      function next() {
-        if (i >= urls.length) return Promise.resolve();
-        var url = urls[i++];
-        return caches.match(url).then(function (hit) {
-          if (hit) return;
-          return fetch(url).then(function (res) {
-            if (res.ok && res.status === 200) return cache.put(url, res);
-          });
-        }).catch(function () {}).then(next);
-      }
-      var lanes = [];
-      for (var w = 0; w < 4; w++) lanes.push(next());
-      return Promise.all(lanes);
-    }).catch(function () {}).then(function () { warming = false; });
+  // ---------- Background offline download ----------
+  // The service worker downloads the whole game in small batches, asked for from here, so the
+  // game works offline everywhere (not just the screens already visited). It pauses during
+  // levels, while hidden or offline, so it never competes with gameplay; "Download all for
+  // offline" runs it at full speed.
+  var pack = { have: 0, total: 0, bytesHave: 0, bytesTotal: 0, done: false, quota: false, error: '' };
+  var fillBusy = false, fillTimer = 0, manualFill = false;
+
+  function inLevel() {
+    try {
+      var sc = window.cc && window.cc.director && window.cc.director.getScene();
+      return !!(sc && /inGame/i.test(sc.name || ''));
+    } catch (e) { return false; }
   }
-  // Re-run a few times: the game keeps loading files after the page's load event.
-  window.addEventListener('load', function () {
-    [60000, 180000].forEach(function (d) { setTimeout(warmCache, d); });
-  });
-  document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'hidden') warmCache();
-  });
+
+  function askWorker(msg) {
+    return new Promise(function (resolve, reject) {
+      var ctl = navigator.serviceWorker && navigator.serviceWorker.controller;
+      if (!ctl || !window.MessageChannel) { reject(new Error('no worker')); return; }
+      var ch = new MessageChannel();
+      var t = setTimeout(function () { reject(new Error('timeout')); }, 120000);
+      ch.port1.onmessage = function (e) { clearTimeout(t); resolve(e.data); };
+      ctl.postMessage(msg, [ch.port2]);
+    });
+  }
+
+  function scheduleFill(ms) {
+    clearTimeout(fillTimer);
+    fillTimer = setTimeout(fillTick, ms);
+  }
+
+  function fillTick() {
+    if (fillBusy || pack.done || pack.quota) return;
+    var ready = swSupported && navigator.serviceWorker.controller && navigator.onLine;
+    if (!ready || document.visibilityState !== 'visible') { scheduleFill(10000); return; }
+    var playing = !manualFill && inLevel(); // during levels: a gentle trickle
+    fillBusy = true;
+    askWorker({ type: 'FILL', max: manualFill ? 40 : playing ? 6 : 12 }).then(function (r) {
+      if (r && r.type === 'FILL') {
+        if (r.error) pack.error = r.error;
+        else {
+          pack.have = r.have; pack.total = r.total; pack.bytesHave = r.bytesHave; pack.bytesTotal = r.bytesTotal;
+          pack.done = !!r.done; pack.quota = !!r.quota; pack.error = '';
+        }
+      }
+    }).catch(function (e) { pack.error = e.message; }).then(function () {
+      fillBusy = false;
+      renderPack();
+      if (pack.done) { manualFill = false; return; }
+      if (pack.quota) { manualFill = false; toast('Not enough storage on this iPad to finish the offline download.'); return; }
+      scheduleFill(pack.error ? 15000 : manualFill ? 50 : inLevel() ? 4000 : 1500);
+    });
+  }
+
+  function startFill(manual) {
+    if (manual) manualFill = true;
+    pack.quota = false;
+    scheduleFill(manual ? 0 : 8000);
+  }
+  if (swSupported) {
+    navigator.serviceWorker.ready.then(function () { startFill(false); });
+    navigator.serviceWorker.addEventListener('controllerchange', function () { pack.done = false; startFill(false); });
+    window.addEventListener('online', function () { startFill(false); });
+  }
+
+  function packText() {
+    if (!swSupported) return 'Needs HTTPS';
+    if (!navigator.serviceWorker.controller) return 'Starting… (reload once)';
+    if (!pack.total) return pack.error ? 'Waiting…' : 'Checking…';
+    if (pack.done) return 'Complete – works fully offline';
+    var pct = pack.bytesTotal ? Math.floor(pack.bytesHave / pack.bytesTotal * 100) : Math.floor(pack.have / pack.total * 100);
+    return pct + '% downloaded';
+  }
 
   // ---------- DOM ----------
   var hud, label, backdrop, fileInput, progress, toastEl;
@@ -158,7 +189,7 @@
         if (window.PVZCloud) window.PVZCloud.syncNow('manual');
         else toast('Cloud sync is not configured.');
       }
-      if (act === 'offline') downloadAll(a);
+      if (act === 'offline') downloadAll();
       if (act === 'repair') repair();
     });
     progress = backdrop.querySelector('#pvz-progress');
@@ -226,7 +257,6 @@
     syncing: 'Syncing…', synced: 'Up to date', pending: 'Changes not uploaded yet', error: 'Error'
   };
 
-  function packKey() { return '__pvz_pack_' + (swVersion || '?'); }
 
   function render() {
     if (!hud) return;
@@ -248,9 +278,7 @@
     var errs = window.__pvzErrors || [];
     f('errors').textContent = errs.length ? errs.join('\n\n') : 'None';
     hud.classList.toggle('has-errors', errs.length > 0);
-    var packDone = false;
-    try { packDone = localStorage.getItem(packKey()) === '1'; } catch (e) {}
-    f('pack').textContent = !swSupported ? 'Needs HTTPS' : packDone ? 'Downloaded' : 'Partial (as you play)';
+    f('pack').textContent = packText();
   }
 
   // ---------- Diagnostics ----------
@@ -304,72 +332,42 @@
           .catch(function (e) { push(f + ': ' + e.message); });
       });
   }
-  window.addEventListener('pvz:error', function () { render(); probeStartupFiles(); });
+  window.addEventListener('pvz:error', function (e) {
+    render(); probeStartupFiles();
+    // Offline and the game asked for something not downloaded yet: say so instead of nothing.
+    if (/status: 504|Offline and not downloaded/.test(String(e.detail || '')) && !offlineToastShown) {
+      offlineToastShown = true;
+      toast('This part of the game isn\'t downloaded yet (' + packText() + '). Connect to the internet to finish the download.');
+      setTimeout(function () { offlineToastShown = false; }, 30000);
+    }
+  });
+  var offlineToastShown = false;
 
   // ---------- Download all for offline ----------
-  var downloading = false;
-  function downloadAll(btn) {
-    if (downloading) return;
+  function downloadAll() {
     if (!swSupported) { toast('Offline mode needs the site served over HTTPS.'); return; }
-    if (!navigator.onLine) { toast('Connect to the internet to download the offline pack.'); return; }
-    if (!navigator.serviceWorker.controller || !swVersion) {
+    if (!navigator.onLine) { toast('Connect to the internet to download the game.'); return; }
+    if (!navigator.serviceWorker.controller) {
       toast('Reload the page once, then try again.', 'Reload', function () { location.reload(); });
       return;
     }
-    downloading = true;
-    btn.disabled = true;
-    var fill = progress.querySelector('.fill');
-    var text = progress.querySelector('.text');
+    if (pack.done) { toast('Already complete – the game works fully offline.'); return; }
     progress.classList.add('show');
-    text.textContent = 'Reading file list…';
+    startFill(true);
+    renderPack();
+  }
 
-    fetch('asset-list.json', { cache: 'no-store' }).then(function (r) {
-      if (!r.ok) throw new Error('asset-list.json not found (run gen-asset-list.js)');
-      return r.json();
-    }).then(function (list) {
-      var files = Array.isArray(list) ? list : list.files;
-      var total = files.length, done = 0, failed = 0, i = 0;
-      var cacheName = 'pvz-assets-' + swVersion;
-      return caches.open(cacheName).then(function (cache) {
-        function update() {
-          fill.style.width = (total ? (done / total) * 100 : 100).toFixed(1) + '%';
-          text.textContent = done + ' / ' + total + ' files' + (failed ? ' · ' + failed + ' failed' : '');
-        }
-        function worker() {
-          if (i >= total) return Promise.resolve();
-          var url = new URL(files[i++], document.baseURI).href;
-          return caches.match(url).then(function (hit) {
-            if (hit) return;
-            return fetch(url, { cache: 'no-cache' }).then(function (res) {
-              if (!res.ok) throw new Error(res.status);
-              return cache.put(url, res);
-            });
-          }).catch(function (e) {
-            failed++;
-            if (e && e.name === 'QuotaExceededError') throw e;
-          }).then(function () { done++; update(); return worker(); });
-        }
-        update();
-        var workers = [];
-        for (var w = 0; w < 6; w++) workers.push(worker());
-        return Promise.all(workers).then(function () {
-          if (!failed) {
-            try { localStorage.setItem(packKey(), '1'); } catch (e) {}
-            text.textContent = 'Done – the game now works fully offline.';
-          } else {
-            text.textContent = failed + ' file(s) failed. Tap again to retry the missing ones.';
-          }
-        });
-      });
-    }).catch(function (e) {
-      text.textContent = (e && e.name === 'QuotaExceededError')
-        ? 'Not enough storage on this device. Add the game to your Home Screen and try again.'
-        : 'Download failed: ' + (e && e.message ? e.message : e);
-    }).then(function () {
-      downloading = false;
-      btn.disabled = false;
-      render();
-    });
+  function renderPack() {
+    if (!backdrop) return;
+    var f = backdrop.querySelector('[data-f="pack"]');
+    if (f) f.textContent = packText();
+    if (progress && (manualFill || progress.classList.contains('show'))) {
+      var pct = pack.bytesTotal ? pack.bytesHave / pack.bytesTotal * 100 : 0;
+      progress.querySelector('.fill').style.width = (pack.done ? 100 : pct).toFixed(1) + '%';
+      progress.querySelector('.text').textContent = pack.done
+        ? 'Done – the game now works fully offline.'
+        : (pack.total ? pack.have + ' / ' + pack.total + ' files (' + Math.round(pack.bytesHave / 1048576) + ' / ' + Math.round(pack.bytesTotal / 1048576) + ' MB)' : 'Starting…');
+    }
   }
 
   // ---------- Toast ----------

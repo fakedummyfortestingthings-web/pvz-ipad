@@ -55,7 +55,7 @@ test('Pages installs offline support at the site root and works without CNAME', 
         'game-audio.js': 'export function initializeGameAudio() {}',
         'audio/manifest.json': '{}',
         'audio/a b.mp3': 'x',
-        'sw.js': "const CACHE_VERSION = 'v1';\nself.x = 1;",
+        'sw.js': "const CACHE_VERSION = 'v1';\nconst RELEASE = '';\nself.x = 1;",
         'manifest.webmanifest': '{"name":"PvZ","start_url":"./","scope":"./"}',
         '.nojekyll': '', 'ads.txt': 'ads',
     };
@@ -67,15 +67,20 @@ test('Pages installs offline support at the site root and works without CNAME', 
     await buildPagesLite({ input, output, revision });
     const sw = await readFile(path.join(output, 'sw.js'), 'utf8');
     assert.ok(sw.includes(`const CACHE_VERSION = '${revision.slice(0, 12)}';`));
+    assert.ok(sw.includes(`const RELEASE = 'releases/${revision}/';`));
     const payload = path.join(output, 'releases', revision);
     const manifest = JSON.parse(await readFile(path.join(payload, 'manifest.webmanifest'), 'utf8'));
     assert.equal(manifest.start_url, '../../');
     assert.equal(new URL(manifest.start_url, `https://u.github.io/repo/releases/${revision}/manifest.webmanifest`).href, 'https://u.github.io/repo/');
     const list = JSON.parse(await readFile(path.join(payload, 'asset-list.json'), 'utf8'));
-    assert.ok(list.files.includes('audio/a%20b.mp3'));
-    assert.ok(list.files.includes('index.html'));
-    assert.ok(!list.files.includes('sw.js'));
-    assert.ok(!list.files.includes('asset-list.json'));
+    const paths = list.files.map(f => f.p);
+    assert.ok(paths.includes('audio/a%20b.mp3'));
+    assert.ok(paths.includes('index.html'));
+    assert.ok(!paths.includes('sw.js'));
+    assert.ok(!paths.includes('asset-list.json'));
+    const mp3 = list.files.find(f => f.p === 'audio/a%20b.mp3');
+    assert.equal(mp3.s, 1);
+    assert.match(mp3.h, /^[0-9a-f]{16}$/);
     await assert.rejects(readFile(path.join(output, 'CNAME'), 'utf8'), { code: 'ENOENT' });
     assert.equal(await readFile(path.join(input, 'manifest.webmanifest'), 'utf8'), files['manifest.webmanifest']);
 });

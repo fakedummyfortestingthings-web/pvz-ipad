@@ -43,6 +43,32 @@
     };
   }
 
+  // ---------- Engine memory setting ----------
+  // By default the engine keeps every image in memory twice (the decoded original plus the GPU
+  // copy). iPad Safari kills pages that use too much memory, so on touch devices the original
+  // is freed after upload (the game never reads image pixels back).
+  if (isTouch) (function () {
+    function tune(ccObj) {
+      try { if (ccObj && ccObj.macro) { ccObj.macro.CLEANUP_IMAGE_CACHE = true; return true; } } catch (e) {}
+      return false;
+    }
+    var stored;
+    try {
+      Object.defineProperty(window, 'cc', {
+        configurable: true, enumerable: true,
+        get: function () { return stored; },
+        set: function (v) {
+          stored = v;
+          // macro is filled in later in the same engine start-up, so check again shortly.
+          if (!tune(v)) Promise.resolve().then(function () { if (!tune(v)) setTimeout(function () { tune(v); }, 0); });
+        }
+      });
+    } catch (e) {
+      var iv = setInterval(function () { if (tune(window.cc)) clearInterval(iv); }, 50);
+      setTimeout(function () { clearInterval(iv); }, 60000);
+    }
+  })();
+
   // ---------- Error log (shown in the ⚙ panel; iPad has no easy console) ----------
   var errors = window.__pvzErrors = [];
   function logError(msg) {
@@ -679,6 +705,14 @@
     screen.orientation.addEventListener('change', scheduleRefit);
   }
   window.addEventListener('pageshow', scheduleRefit);
+  // Entering/leaving full screen changes the window size, sometimes without a resize event,
+  // and iPad Safari reports the final size only after its animation.
+  ['fullscreenchange', 'webkitfullscreenchange'].forEach(function (ev) {
+    document.addEventListener(ev, function () {
+      scheduleRefit();
+      [1000, 1600].forEach(function (d) { setTimeout(refit, d); });
+    });
+  });
 
   // ---------- Rotate overlay ----------
   function addOverlay() {

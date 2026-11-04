@@ -3,13 +3,17 @@
 ## What's included
 - **iPad layout**: full screen in landscape, safe areas respected, pinch/double-tap zoom blocked, "Rotate your iPad" screen in portrait, sound unlocked on first tap.
 - **Durable saves**: every `PvZ2_*` save key (`PvZ2_PlayerProperties`, `PvZ2_Settings`, `PvZ2_GitHubLevels`, `PvZ2_GitHubLevels_Sha`) is mirrored into IndexedDB and restored automatically if Safari wipes localStorage. Export/Import save as a file from the ⚙ pill.
-- **Offline play**: a service worker caches everything the game loads; "Download all for offline" in the ⚙ panel fetches the whole game. Each deploy gets fresh caches automatically (the build stamps the commit SHA into `sw.js`).
+- **Offline play**: the service worker downloads the whole game in the background (small level data first, music last; a gentle trickle during levels) – progress in ⚙ → Offline pack, "Download all for offline" runs it at full speed. On every deploy the new release carries over unchanged files by content hash (`asset-list.json`) and only takes over once its start-up files are cached, so an update can never break offline play.
 - **Cloud sync (Firebase)**: saves made offline upload when the iPad is back online. Off until `docs/sync/firebase-config.js` has real values.
 
 ## Playing on iPad
 - **Tap** = click (tap a seed, then a square). **Drag** a seed/shovel/Plant Food onto the lawn and let go to drop it. **Sweep** over sun to collect.
 - **Two-finger tap** = right click (cancel seed, Zen Garden water). **Two-finger swipe / pinch** = mouse wheel.
 - Left-edge buttons: **⛶** full screen, **⚙** settings (saves, offline, **Graphics**: Smoothest / Balanced / Sharpest — Balanced is the default on touch screens; lower it if the iPad gets hot or laggy).
+
+## Game tweaks
+- **Level of the Day (Piñatas)** refreshes every hour instead of once a day (edit in `docs/assets/main/index.js`, LevelOfTheDayDisplayer).
+- The shop's costume stock already refreshes daily (game default).
 
 ## Turning on cloud sync (5 minutes, needs your Google account)
 1. console.firebase.google.com → **Add project**.

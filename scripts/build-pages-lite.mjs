@@ -1,5 +1,6 @@
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { buildWebLite, parseWebLiteArguments, validateWebLitePaths } from './build-web-lite.mjs';
 
@@ -62,9 +63,13 @@ export async function installOfflineSupport({ payload, output, revision }) {
     const swPath = path.join(payload, 'sw.js');
     if (!(await exists(swPath))) return;
     const versionPattern = /const CACHE_VERSION = '[^']*';/g;
+    const releasePattern = /const RELEASE = '[^']*';/g;
     const sw = await readFile(swPath, 'utf8');
     if ([...sw.matchAll(versionPattern)].length !== 1) throw new Error('sw.js must declare exactly one CACHE_VERSION');
-    await writeFile(path.join(output, 'sw.js'), sw.replace(versionPattern, `const CACHE_VERSION = '${revision.slice(0, 12)}';`));
+    if ([...sw.matchAll(releasePattern)].length !== 1) throw new Error('sw.js must declare exactly one RELEASE');
+    await writeFile(path.join(output, 'sw.js'), sw
+        .replace(versionPattern, `const CACHE_VERSION = '${revision.slice(0, 12)}';`)
+        .replace(releasePattern, `const RELEASE = 'releases/${revision}/';`));
 
     const manifestPath = path.join(payload, 'manifest.webmanifest');
     if (await exists(manifestPath)) {
@@ -78,12 +83,20 @@ export async function installOfflineSupport({ payload, output, revision }) {
     const files = (await listFiles(payload))
         .filter(name => !skip.has(name) && !name.split('/').some(part => part.startsWith('.')) && !name.endsWith('.map'))
         .sort();
+    // Each entry carries a content hash so the service worker can keep unchanged files across
+    // deploys instead of downloading the whole game again.
     let bytes = 0;
-    for (const name of files) bytes += (await stat(path.join(payload, name))).size;
-    const list = {
-        generatedAt: new Date().toISOString(), count: files.length, bytes,
-        files: files.map(name => name.split('/').map(encodeURIComponent).join('/')),
-    };
+    const entries = [];
+    for (const name of files) {
+        const data = await readFile(path.join(payload, name));
+        bytes += data.length;
+        entries.push({
+            p: name.split('/').map(encodeURIComponent).join('/'),
+            h: createHash('sha1').update(data).digest('hex').slice(0, 16),
+            s: data.length,
+        });
+    }
+    const list = { generatedAt: new Date().toISOString(), count: files.length, bytes, files: entries };
     await writeFile(path.join(payload, 'asset-list.json'), JSON.stringify(list));
     console.log(`Offline pack: ${files.length} files, ${(bytes / 1048576).toFixed(1)} MB`);
 }

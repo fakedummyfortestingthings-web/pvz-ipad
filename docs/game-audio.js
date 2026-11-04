@@ -13,7 +13,8 @@ const DEFAULT_VOLUME = 0.9;
 const MUSIC_POOL_SIZE = 8;          // <audio> elements for music (and fallback)
 const FALLBACK_POOL_SIZE = 60;      // original pool size when Web Audio is unavailable
 const MAX_SFX_VOICES = 48;          // concurrent sound effects
-const SFX_CACHE_BYTES = 64 * 1048576; // decoded PCM kept in memory (least recently used evicted)
+const SFX_CACHE_BYTES = 24 * 1048576; // decoded PCM kept in memory (least recently used evicted)
+const LONG_CLIP_BYTES = 350 * 1024; // longer clips (ambience loops) stream via <audio> instead
 
 function clamp01(v) { return Math.min(1, Math.max(0, Number(v) || 0)); }
 
@@ -32,7 +33,7 @@ class ElementPool {
         }
     }
 
-    play(engine, src, speed, volume) {
+    play(engine, src, speed, volume, forcedId) {
         const slot = this.pool.find(s => !s.playing);
         if (!slot) return null;
         const el = slot.el;
@@ -43,7 +44,7 @@ class ElementPool {
         el.playbackRate = speed;
         el.preservesPitch = false;
         el.volume = clamp01(volume);
-        slot.id = engine.nextId++;
+        slot.id = forcedId || engine.nextId++;
         slot.playing = true;
         slot.fading = false;
         slot.speed = speed;
@@ -154,6 +155,7 @@ class SfxEngine {
         this.master = this.ctx.createGain();
         this.master.connect(this.ctx.destination);
         this.cache = new Map();   // url -> { buffer, bytes, used }
+        this.longClips = new Set(); // clips too long to decode into memory: played via <audio>
         this.loading = new Map(); // url -> Promise<AudioBuffer>
         this.bytes = 0;
         this.voices = new Set();
@@ -182,7 +184,15 @@ class SfxEngine {
         if (p) return p;
         p = fetch(url)
             .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
-            .then(data => this.decode(data))
+            .then(data => {
+                if (data.byteLength > LONG_CLIP_BYTES) {
+                    this.longClips.add(url);
+                    const err = new Error('long clip');
+                    err.longClip = true;
+                    throw err;
+                }
+                return this.decode(data);
+            })
             .then(buffer => {
                 const bytes = buffer.length * buffer.numberOfChannels * 4;
                 this.cache.set(url, { buffer, bytes, used: ++this.clock });
@@ -238,7 +248,18 @@ class SfxEngine {
                 v.buffer = b;
                 this.applyLoop(v);
                 if (!v.paused) this.start(engine, v, v.offset);
-            }).catch(() => this.release(engine, v));
+            }).catch((err) => {
+                const wasDead = v.dead;
+                const id = v.id, loopBefore = v.restartBefore;
+                this.release(engine, v);
+                if (wasDead || !err || !err.longClip) return;
+                // Too long to keep decoded: hand the same id over to an <audio> element.
+                const got = engine.elements.play(engine, url, v.speed, v.volume, id);
+                if (got != null && loopBefore != null) {
+                    const slot = engine.getSlot(id);
+                    if (slot) engine.elements.setRestartBeforeEnd(slot, loopBefore * 1000);
+                }
+            });
         }
         return v.id;
     }
@@ -366,7 +387,7 @@ export class AudioEngine {
             return null;
         }
         const src = new URL(relPath.split('/').map(encodeURIComponent).join('/'), this.audioRoot).href;
-        if (this.sfx && !relPath.startsWith('Music/')) return this.sfx.play(this, src, speed, volume);
+        if (this.sfx && !relPath.startsWith('Music/') && !this.sfx.longClips.has(src)) return this.sfx.play(this, src, speed, volume);
         return this.elements.play(this, src, speed, volume);
     }
 

@@ -28,20 +28,9 @@ html, body {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Game container (Cocos Creator 2.x and 3.x ids). Keeps the game inside the safe area.
-   If the game ever looks offset, delete this block first. */
-#GameDiv {
-  position: fixed !important;
-  top: var(--pvz-safe-top) !important;
-  right: var(--pvz-safe-right) !important;
-  bottom: var(--pvz-safe-bottom) !important;
-  left: var(--pvz-safe-left) !important;
-  width: auto !important;
-  height: auto !important;
-  margin: 0 !important;
-  overflow: hidden;
-  touch-action: none;
-}
+/* The engine sizes #GameDiv itself (exact-fit to the window, or to the full-screen element);
+   overriding its size here made the picture and the tap positions disagree in full screen. */
+#GameDiv { touch-action: none; }
 
 #Cocos2dGameContainer,
 #Cocos3dGameContainer,

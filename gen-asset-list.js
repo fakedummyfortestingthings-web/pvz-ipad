@@ -7,6 +7,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const root = path.resolve(process.argv[2] || 'docs');
 if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
@@ -30,12 +31,17 @@ let bytes = 0;
     const rel = path.relative(root, abs).split(path.sep).join('/');
     if (entry.isDirectory()) { walk(abs); continue; }
     if (!entry.isFile() || EXCLUDE.has(rel) || EXCLUDE_EXT.has(path.extname(entry.name))) continue;
-    files.push(rel.split('/').map(encodeURIComponent).join('/'));
-    bytes += fs.statSync(abs).size;
+    const data = fs.readFileSync(abs);
+    files.push({
+      p: rel.split('/').map(encodeURIComponent).join('/'),
+      h: crypto.createHash('sha1').update(data).digest('hex').slice(0, 16),
+      s: data.length
+    });
+    bytes += data.length;
   }
 })(root);
 
-files.sort();
+files.sort((a, b) => (a.p < b.p ? -1 : a.p > b.p ? 1 : 0));
 const out = { generatedAt: new Date().toISOString(), count: files.length, bytes, files };
 fs.writeFileSync(path.join(root, 'asset-list.json'), JSON.stringify(out));
 console.log(`asset-list.json: ${files.length} files, ${(bytes / 1048576).toFixed(1)} MB`);

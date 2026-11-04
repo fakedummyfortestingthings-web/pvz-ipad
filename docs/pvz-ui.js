@@ -289,6 +289,25 @@
     img.onerror = function () { avifOk = false; render(); };
     img.src = 'data:image/avif;base64,AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAADybWV0YQAAAAAAAAAoaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAGxpYmF2aWYAAAAADnBpdG0AAAAAAAEAAAAeaWxvYwAAAABEAAABAAEAAAABAAABGgAAAB0AAAAoaWluZgAAAAAAAQAAABppbmZlAgAAAAABAABhdjAxQ29sb3IAAAAAamlwcnAAAABLaXBjbwAAABRpc3BlAAAAAAAAAAIAAAACAAAAEHBpeGkAAAAAAwgICAAAAAxhdjFDgQ0MAAAAABNjb2xybmNseAACAAIAAYAAAAAXaXBtYQAAAAAAAAABAAEEAQKDBAAAACVtZGF0EgAKCBgANogQEAwgMg8f8D///8WfhwB8+ErK42A=';
   })();
+  function layoutInfo() {
+    try {
+      var r = function (el) { if (!el) return '?'; var b = el.getBoundingClientRect(); return Math.round(b.width) + '×' + Math.round(b.height) + (Math.round(b.left) || Math.round(b.top) ? '@' + Math.round(b.left) + ',' + Math.round(b.top) : ''); };
+      var vv = window.visualViewport;
+      var ws = window.cc && window.cc.screen && window.cc.screen.windowSize;
+      var de = document.documentElement;
+      return [
+        'Layout: window ' + innerWidth + '×' + innerHeight +
+          (vv ? ' · visible ' + Math.round(vv.width) + '×' + Math.round(vv.height) + ' zoom ' + vv.scale.toFixed(2) : ''),
+        '  page ' + de.clientWidth + '×' + de.clientHeight + ' · box ' + r(document.getElementById('GameDiv')) +
+          ' · canvas ' + r(document.getElementById('GameCanvas')),
+        '  engine ' + (ws ? Math.round(ws.width) + '×' + Math.round(ws.height) : '?') +
+          ' · dpr ' + (window.__pvzRealDpr || '?') + '→' + (window.cc && window.cc.screen ? window.cc.screen.devicePixelRatio : '?') +
+          ' · fullscreen ' + (document.fullscreenElement || document.webkitFullscreenElement ? 'yes' : 'no') +
+          ' · re-fits ' + (window.__pvzLayoutFixes || 0) +
+          ' · ' + (screen.orientation ? screen.orientation.type : (window.orientation + '°'))
+      ].join('\n');
+    } catch (e) { return 'Layout: ' + e.message; }
+  }
   function isTouchUI() { return (navigator.maxTouchPoints || 0) > 0; }
   function deviceInfo() {
     var started = !!(window.cc && window.cc.director && window.cc.director.getScene && window.cc.director.getScene());
@@ -298,6 +317,7 @@
       'AVIF images: ' + (avifOk === null ? 'checking…' : avifOk ? 'supported' : 'NOT supported (needs iPadOS 16+)'),
       'Service worker: ' + (!swSupported ? 'unavailable' : navigator.serviceWorker.controller ? 'active ' + (swVersion || '') : 'not yet active'),
       'Graphics: ' + (window.__pvzQuality || '?') + ' · canvas ' + (function () { var c = document.getElementById('GameCanvas'); return c ? c.width + '×' + c.height : '?'; })(),
+      layoutInfo(),
       'Home Screen app: ' + (navigator.standalone || matchMedia('(display-mode: standalone)').matches ? 'yes' : 'no'),
       'Game engine started: ' + (started ? 'yes' : 'no')
     ].join('\n');

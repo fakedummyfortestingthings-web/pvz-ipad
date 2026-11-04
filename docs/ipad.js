@@ -24,6 +24,7 @@
   var q = QUALITY[quality];
   window.__pvzQuality = quality;
   var realDpr = window.devicePixelRatio || 1;
+  window.__pvzRealDpr = realDpr;
   if (q.scale && realDpr > q.scale) {
     try {
       Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function () { return q.scale; } });
@@ -713,6 +714,49 @@
       [1000, 1600].forEach(function (d) { setTimeout(refit, d); });
     });
   });
+
+  // ---------- Layout watchdog ----------
+  // Safari doesn't always send a resize when full screen, the toolbar or the Home Screen app
+  // changes the window. Twice a second the drawn game is compared with the real window; if
+  // they disagree, the game is re-fitted. If the page got zoomed in, the zoom is reset.
+  function layoutMismatch() {
+    var c = document.getElementById('GameCanvas');
+    var ccObj = window.cc;
+    if (!c || !ccObj || !ccObj.screen) return false;
+    var r = c.getBoundingClientRect();
+    var w = window.innerWidth, h = window.innerHeight;
+    var dpr = ccObj.screen.devicePixelRatio || 1;
+    var off = Math.abs(r.width - w) > 2 || Math.abs(r.height - h) > 2 || Math.abs(r.left) > 2 || Math.abs(r.top) > 2;
+    var buf = Math.abs(c.width - r.width * dpr) > 4 || Math.abs(c.height - r.height * dpr) > 4;
+    return off || buf;
+  }
+  function resetZoom() {
+    var vv = window.visualViewport;
+    if (!vv || vv.scale <= 1.01) return;
+    var meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) return;
+    var content = meta.getAttribute('content');
+    meta.setAttribute('content', content + ',maximum-scale=1.0001');
+    setTimeout(function () { meta.setAttribute('content', content); }, 50);
+  }
+  var strikes = 0;
+  window.__pvzLayoutFixes = 0;
+  var recentFixes = [];
+  setInterval(function () {
+    if (document.visibilityState !== 'visible') return;
+    if (isTouch && window.innerHeight > window.innerWidth) return; // portrait: rotate screen shown
+    resetZoom();
+    if (layoutMismatch()) {
+      var now = Date.now();
+      recentFixes = recentFixes.filter(function (t) { return now - t < 10000; });
+      if (++strikes >= 2 && recentFixes.length < 3) { // back off if re-fitting doesn't help
+        strikes = 0;
+        recentFixes.push(now);
+        window.__pvzLayoutFixes++;
+        refit();
+      }
+    } else strikes = 0;
+  }, 500);
 
   // ---------- Rotate overlay ----------
   function addOverlay() {

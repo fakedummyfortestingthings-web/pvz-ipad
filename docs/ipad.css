@@ -214,3 +214,32 @@ canvas {
 #pvz-panel .pvz-seg { display: flex; gap: 4px; }
 #pvz-panel .pvz-seg button { min-height: 36px; padding: 6px 10px; background: rgba(255, 255, 255, 0.08); font-size: 13px; }
 #pvz-panel .pvz-seg button.on { background: #7ed957; color: #0d1a0d; }
+
+#pvz-gl-lost {
+  position: fixed; inset: 0; z-index: 2147483100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(13, 26, 13, 0.92); color: #fff; text-align: center; padding: 24px;
+  font: 600 18px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+#pvz-gl-lost p { margin: 0 0 10px; max-width: 26em; }
+#pvz-gl-lost button {
+  margin-top: 8px; min-height: 44px; padding: 8px 20px; border: 0; border-radius: 10px;
+  background: #7ed957; color: #0d1a0d; font: inherit;
+}
+
+#pvz-save-sheet {
+  position: fixed; inset: 0; z-index: 2147483200; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55); padding: 16px;
+  font: 500 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+#pvz-save-sheet .pvz-sheet-box {
+  background: #1d2b1d; color: #fff; border-radius: 14px; padding: 18px; width: min(360px, 100%);
+  display: flex; flex-direction: column; gap: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+}
+#pvz-save-sheet b { word-break: break-all; }
+#pvz-save-sheet p { margin: 0; color: #cfe6c6; font-size: 14px; }
+#pvz-save-sheet button {
+  min-height: 46px; border: 0; border-radius: 10px; background: #7ed957; color: #0d1a0d; font-weight: 600; font-size: 16px; line-height: 1.2;
+  font-family: inherit;
+}
+#pvz-save-sheet button.pvz-sheet-close { background: #3a4a3a; color: #fff; }

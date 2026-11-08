@@ -30,19 +30,81 @@
       Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function () { return q.scale; } });
     } catch (e) {}
   }
-  if (!q.aa && window.HTMLCanvasElement) {
+  if (window.HTMLCanvasElement) {
     var origGetContext = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function (type, attrs) {
       if (this.id === 'GameCanvas' && /webgl/i.test(String(type))) {
         var a = {};
         if (attrs) for (var k in attrs) a[k] = attrs[k];
-        a.antialias = false;
+        if (!q.aa) a.antialias = false;
         a.powerPreference = 'high-performance';
-        return origGetContext.call(this, type, a);
+        var ctx = origGetContext.call(this, type, a);
+        if (ctx && !window.__pvzGL) window.__pvzGL = ctx;
+        return ctx;
       }
       return origGetContext.apply(this, arguments);
     };
   }
+
+  // ---------- Graphics reset recovery ----------
+  // When an iPad runs low on memory it can take the game's graphics away ("WebGL context
+  // lost"). The engine can't rebuild them, so the picture freezes or goes black while the game
+  // keeps running (and new render targets fail with engine error 16321). Instead: save, explain,
+  // reload, and step the graphics setting down so it doesn't happen again on this device.
+  var GL_STEP_DOWN = { sharp: 'balanced', balanced: 'smooth' };
+  var glHandled = false;
+  function onGraphicsLost(reason) {
+    if (glHandled) return;
+    glHandled = true;
+    var recent = [];
+    try { recent = JSON.parse(localStorage.getItem('__pvz_gl_resets') || '[]'); } catch (e) {}
+    var now = Date.now();
+    recent = recent.filter(function (t) { return now - t < 5 * 60000; });
+    recent.push(now);
+    var next = GL_STEP_DOWN[quality];
+    try {
+      localStorage.setItem('__pvz_gl_resets', JSON.stringify(recent));
+      if (next) localStorage.setItem('__pvz_quality', next);
+      localStorage.setItem('__pvz_gl_notice', JSON.stringify({ from: quality, to: next || quality, reason: reason }));
+    } catch (e) {}
+    try { if (window.PVZSave) window.PVZSave.flush(); } catch (e) {}
+    var auto = recent.length <= 2; // never loop: after 2 resets in 5 minutes, ask instead
+    showGraphicsOverlay(auto);
+    if (auto) {
+      var go = function () { setTimeout(function () { location.reload(); }, 1200); };
+      if (document.visibilityState === 'visible') go();
+      else document.addEventListener('visibilitychange', function v() {
+        if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', v); go(); }
+      });
+    }
+  }
+  function showGraphicsOverlay(auto) {
+    var build = function () {
+      var el = document.createElement('div');
+      el.id = 'pvz-gl-lost';
+      el.innerHTML = '<div><p>The iPad reset the game\'s graphics (it was low on memory).</p>' +
+        '<p>' + (auto ? 'Reloading… your progress is saved.' : 'Your progress is saved. Close other apps and tabs, then reload.') + '</p>' +
+        (auto ? '' : '<button type="button">Reload</button>') + '</div>';
+      var b = el.querySelector('button');
+      if (b) b.addEventListener('click', function () { location.reload(); });
+      document.body.appendChild(el);
+    };
+    if (document.body) build(); else document.addEventListener('DOMContentLoaded', build);
+  }
+  window.addEventListener('webglcontextlost', function (e) {
+    if (e.target && e.target.id === 'GameCanvas') { try { e.preventDefault(); } catch (x) {} onGraphicsLost('context lost'); }
+  }, true);
+  // Some iPads report it only through the engine's framebuffer errors; confirm it's really lost.
+  window.addEventListener('pvz:error', function (e) {
+    if (/Error 1631[89]|Error 1632[01]/.test(String(e.detail || ''))) {
+      var gl = window.__pvzGL;
+      if (gl && gl.isContextLost && gl.isContextLost()) onGraphicsLost('framebuffer error');
+    }
+  });
+  window.__pvzSimulateGraphicsLoss = function () {
+    var gl = window.__pvzGL, ext = gl && gl.getExtension('WEBGL_lose_context');
+    if (ext) ext.loseContext();
+  };
 
   // ---------- Engine memory setting ----------
   // By default the engine keeps every image in memory twice (the decoded original plus the GPU
@@ -76,6 +138,10 @@
     msg = String(msg || 'Unknown error').slice(0, 300);
     // Normal before the first tap: browsers block sound until the user interacts.
     if (/user didn't interact|NotAllowedError|not allowed by the user agent|play failed/i.test(msg)) return;
+    // Cloud sync failures (often a school network blocking Google) don't affect the game.
+    if (/@firebase|firestore|googleapis|apis\.google\.com|gstatic\.com\/firebasejs/i.test(msg)) {
+      msg = 'Cloud sync can\'t reach Firebase (network may block it). Saves are still kept on this iPad.';
+    }
     if (errors.length >= 20 || errors.indexOf(msg) !== -1) return;
     errors.push(msg);
     try { window.dispatchEvent(new CustomEvent('pvz:error', { detail: msg })); } catch (e) {}
@@ -667,7 +733,49 @@
     };
   }
 
+  // ---------- Aspect ratio ----------
+  // The game is laid out for 16:10 or wider. On a squarer screen (an iPad in full screen is
+  // about 4:3) the engine fills the height and crops the right side: the end of the lawn, the
+  // pause button and incoming zombies go off-screen. Below 16:10 we let the engine letterbox
+  // (thin black bars top and bottom) so the whole game is always visible; at 16:10 or wider
+  // it keeps filling the screen as before.
+  var letterboxed = null;
+  function designRatio(cc) {
+    try { var d = cc.view.getDesignResolutionSize(); if (d.width && d.height) return d.width / d.height; } catch (e) {}
+    return 1.6;
+  }
+  function wantsLetterbox(cc) {
+    var w = window.innerWidth, h = window.innerHeight;
+    return h > 0 && w / h < designRatio(cc) - 0.01;
+  }
+  function applyAspect() {
+    var cc = window.cc;
+    if (!cc || !cc.view || !cc.ResolutionPolicy || !cc.ResolutionPolicy.ContainerStrategy) return false;
+    if (!cc.view.getDesignResolutionSize || !cc.view.getResolutionPolicy) return false;
+    // Wait until the engine has started (design size set, first scene running).
+    try {
+      var d = cc.view.getDesignResolutionSize();
+      if (!d.width || !d.height || !cc.director || !cc.director.getScene || !cc.director.getScene()) return false;
+    } catch (e) { return false; }
+    var want = wantsLetterbox(cc);
+    var RP = cc.ResolutionPolicy;
+    var cur = cc.view.getResolutionPolicy();
+    // Read the engine's real state: the game may set its own policy after ours.
+    var isOn = !!(cur && cur._containerStrategy === RP.ContainerStrategy.PROPORTION_TO_FRAME);
+    letterboxed = isOn;
+    if (want === isOn) return false;
+    try {
+      var content = (cur && cur._contentStrategy) || RP.ContentStrategy.SHOW_ALL;
+      cc.view.setResolutionPolicy(new RP(want ? RP.ContainerStrategy.PROPORTION_TO_FRAME : RP.ContainerStrategy.EQUAL_TO_FRAME, content));
+      letterboxed = want;
+      document.documentElement.classList.toggle('pvz-letterbox', want);
+      return true;
+    } catch (e) { return false; }
+  }
+  window.__pvzLetterboxed = function () { return !!letterboxed; };
+
   function refit() {
+    applyAspect();
     var s = viewportSize();
     var root = document.documentElement.style;
     root.setProperty('--pvz-vw', s.w + 'px');
@@ -726,7 +834,13 @@
     var r = c.getBoundingClientRect();
     var w = window.innerWidth, h = window.innerHeight;
     var dpr = ccObj.screen.devicePixelRatio || 1;
-    var off = Math.abs(r.width - w) > 2 || Math.abs(r.height - h) > 2 || Math.abs(r.left) > 2 || Math.abs(r.top) > 2;
+    var ew = w, eh = h;
+    if (letterboxed) {
+      var ratio = designRatio(ccObj);
+      if (w / h < ratio) eh = w / ratio; else ew = h * ratio;
+    }
+    var off = Math.abs(r.width - ew) > 2 || Math.abs(r.height - eh) > 2 ||
+      Math.abs(r.left - (w - ew) / 2) > 2 || Math.abs(r.top - (h - eh) / 2) > 2;
     var buf = Math.abs(c.width - r.width * dpr) > 4 || Math.abs(c.height - r.height * dpr) > 4;
     return off || buf;
   }
@@ -746,6 +860,7 @@
     if (document.visibilityState !== 'visible') return;
     if (isTouch && window.innerHeight > window.innerWidth) return; // portrait: rotate screen shown
     resetZoom();
+    if (applyAspect()) { strikes = 0; scheduleRefit(); return; }
     if (layoutMismatch()) {
       var now = Date.now();
       recentFixes = recentFixes.filter(function (t) { return now - t < 10000; });

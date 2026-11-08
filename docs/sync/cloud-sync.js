@@ -69,11 +69,13 @@ async function start() {
     import(`${SDK}/firebase-firestore-lite.js`) // REST only: no background connection
   ]);
   const { initializeApp, getApps } = appMod;
-  const { getAuth, signInAnonymously, onAuthStateChanged } = authMod;
+  const { initializeAuth, indexedDBLocalPersistence, browserLocalPersistence, signInAnonymously, onAuthStateChanged } = authMod;
   const { getFirestore, doc, getDoc, setDoc, collection, getDocs, deleteDoc } = fsMod;
 
   const app = getApps().length ? getApps()[0] : initializeApp(config);
-  const auth = getAuth(app);
+  // initializeAuth without a popup/redirect resolver: getAuth() would also load
+  // apis.google.com/js/api.js, which school networks often block (and we never use popups).
+  const auth = initializeAuth(app, { persistence: [indexedDBLocalPersistence, browserLocalPersistence] });
   const db = getFirestore(app);
 
   // Wait for the persisted session (works offline).

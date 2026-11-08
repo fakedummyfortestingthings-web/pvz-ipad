@@ -4,7 +4,10 @@
 - **iPad layout**: full screen in landscape, safe areas respected, pinch/double-tap zoom blocked, "Rotate your iPad" screen in portrait, sound unlocked on first tap.
 - **Durable saves**: every `PvZ2_*` save key (`PvZ2_PlayerProperties`, `PvZ2_Settings`, `PvZ2_GitHubLevels`, `PvZ2_GitHubLevels_Sha`) is mirrored into IndexedDB and restored automatically if Safari wipes localStorage. Export/Import save as a file from the ⚙ pill.
 - **Offline play**: the service worker downloads the whole game in the background (small level data first, music last; a gentle trickle during levels) – progress in ⚙ → Offline pack, "Download all for offline" runs it at full speed. On every deploy the new release carries over unchanged files by content hash (`asset-list.json`) and only takes over once its start-up files are cached, so an update can never break offline play.
-- **Cloud sync (Firebase)**: saves made offline upload when the iPad is back online. Off until `docs/sync/firebase-config.js` has real values.
+- **Cloud sync (Firebase)**: saves made offline upload when the iPad is back online. Off until `docs/sync/firebase-config.js` has real values. Uses `initializeAuth` (no apis.google.com script, which school networks often block).
+- **Screen shapes**: on screens narrower than 16:10 (an iPad in full screen is ~4:3) the game is letterboxed with thin bars top and bottom so the whole lawn, the pause button and incoming zombies stay visible; wider screens fill edge to edge.
+- **Graphics resets**: if iPadOS takes the game's graphics away when memory runs low (frozen or black picture, engine error 16321), the game saves, reloads itself and steps Graphics down one level (at most 2 automatic reloads per 5 minutes).
+- **Exporting profiles**: on iPad, the game's Export (and ⚙ → Export) opens the Share sheet → "Save to Files"; if sharing or downloads are blocked (managed/school iPads), a sheet offers Download or Copy as text.
 
 ## Playing on iPad
 - **Tap** = click (tap a seed, then a square). **Drag** a seed/shovel/Plant Food onto the lawn and let go to drop it. **Sweep** over sun to collect.

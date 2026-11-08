@@ -315,15 +315,93 @@
       updatedAt: snap.updatedAt,
       data: snap.data
     };
-    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
+    saveText('pvzge-save-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(payload, null, 2));
+  }
+
+  // ---------- saving a text file on iPad ----------
+  // iPadOS often ignores <a download> (always in Home Screen apps, and some school-managed
+  // iPads block downloads). The Share sheet ("Save to Files") works there, so touch screens use
+  // it first; if that's unavailable we show a small sheet whose buttons run on a real tap,
+  // with Download and Copy as fallbacks.
+  var isTouchDevice = (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
+  function makeFile(name, text) {
+    var types = ['application/json', 'text/plain'];
+    for (var i = 0; i < types.length; i++) {
+      try {
+        var f = new File([text], name, { type: types[i] });
+        if (navigator.canShare && navigator.canShare({ files: [f] })) return f;
+      } catch (e) {}
+    }
+    return null;
+  }
+  function download(name, text) {
+    var url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'pvzge-save-' + new Date().toISOString().slice(0, 10) + '.json';
+    a.download = name;
+    a.rel = 'noopener';
+    a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
-    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 60000);
   }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+      var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+      ta.remove(); ok ? resolve() : reject(new Error('copy blocked'));
+    });
+  }
+  function showSaveSheet(name, text, note) {
+    var old = document.getElementById('pvz-save-sheet');
+    if (old) old.remove();
+    var el = document.createElement('div');
+    el.id = 'pvz-save-sheet';
+    var file = makeFile(name, text);
+    el.innerHTML = '<div class="pvz-sheet-box"><b></b><p></p>' +
+      (file ? '<button type="button" data-a="share">Save to Files / Share</button>' : '') +
+      '<button type="button" data-a="dl">Download</button>' +
+      '<button type="button" data-a="copy">Copy as text</button>' +
+      '<button type="button" data-a="close" class="pvz-sheet-close">Close</button></div>';
+    el.querySelector('b').textContent = name;
+    el.querySelector('p').textContent = note || 'Choose how to save it.';
+    var msg = el.querySelector('p');
+    el.addEventListener('click', function (e) {
+      var a = e.target && e.target.getAttribute && e.target.getAttribute('data-a');
+      if (!a) { if (e.target === el) el.remove(); return; }
+      if (a === 'close') el.remove();
+      else if (a === 'share') {
+        navigator.share({ files: [file], title: name }).then(function () { el.remove(); }, function (err) {
+          if (!err || err.name !== 'AbortError') msg.textContent = 'Sharing is blocked on this iPad – try Download or Copy.';
+        });
+      } else if (a === 'dl') {
+        download(name, text);
+        msg.textContent = 'If nothing appeared, downloads may be blocked – use Copy and paste it into Notes.';
+      } else if (a === 'copy') {
+        copyText(text).then(function () { msg.textContent = 'Copied. Paste it into Notes or a message to keep it.'; },
+          function () { msg.textContent = 'Copying is blocked too, sorry.'; });
+      }
+    });
+    (document.body || document.documentElement).appendChild(el);
+  }
+  function saveText(name, text) {
+    text = String(text);
+    if (!isTouchDevice) { try { download(name, text); return; } catch (e) {} }
+    var file = makeFile(name, text);
+    if (file && navigator.share) {
+      try {
+        navigator.share({ files: [file], title: name }).catch(function (err) {
+          if (!err || err.name !== 'AbortError') showSaveSheet(name, text);
+        });
+        return;
+      } catch (e) {}
+    }
+    showSaveSheet(name, text);
+  }
+  window.__pvzSaveText = saveText;
 
   function importFile(file) {
     return file.text().then(function (text) {

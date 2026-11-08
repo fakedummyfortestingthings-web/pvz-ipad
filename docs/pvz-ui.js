@@ -304,6 +304,7 @@
           ' · dpr ' + (window.__pvzRealDpr || '?') + '→' + (window.cc && window.cc.screen ? window.cc.screen.devicePixelRatio : '?') +
           ' · fullscreen ' + (document.fullscreenElement || document.webkitFullscreenElement ? 'yes' : 'no') +
           ' · re-fits ' + (window.__pvzLayoutFixes || 0) +
+          (window.__pvzLetterboxed && window.__pvzLetterboxed() ? ' · bars on (screen narrower than 16:10)' : '') +
           ' · ' + (screen.orientation ? screen.orientation.type : (window.orientation + '°'))
       ].join('\n');
     } catch (e) { return 'Layout: ' + e.message; }
@@ -427,6 +428,19 @@
   window.addEventListener('pvz:localsave', function () { if (backdrop && backdrop.classList.contains('open')) render(); });
   window.addEventListener('pvz:cloudstatus', function (e) { cloud = e.detail; render(); });
 
-  if (document.body) build();
-  else document.addEventListener('DOMContentLoaded', build);
+  // After a graphics reset (see ipad.js): explain what happened once.
+  function graphicsNotice() {
+    var n = null;
+    try { n = JSON.parse(localStorage.getItem('__pvz_gl_notice') || 'null'); localStorage.removeItem('__pvz_gl_notice'); } catch (e) {}
+    if (!n) return;
+    var names = { smooth: 'Smoothest', balanced: 'Balanced', sharp: 'Sharpest' };
+    setTimeout(function () {
+      toast(n.to !== n.from
+        ? 'The iPad ran low on memory and reset the graphics. Graphics set to ' + names[n.to] + ' to stop it happening again.'
+        : 'The iPad ran low on memory and reset the graphics. Closing other apps and tabs helps.');
+    }, 3000);
+  }
+
+  if (document.body) { build(); graphicsNotice(); }
+  else document.addEventListener('DOMContentLoaded', function () { build(); graphicsNotice(); });
 })();

@@ -320,8 +320,19 @@
       'Graphics: ' + (window.__pvzQuality || '?') + ' · canvas ' + (function () { var c = document.getElementById('GameCanvas'); return c ? c.width + '×' + c.height : '?'; })(),
       layoutInfo(),
       'Home Screen app: ' + (navigator.standalone || matchMedia('(display-mode: standalone)').matches ? 'yes' : 'no'),
-      'Game engine started: ' + (started ? 'yes' : 'no')
+      'Game engine started: ' + (started ? 'yes' : 'no'),
+      soundInfo()
     ].join('\n');
+  }
+  function soundInfo() {
+    var a = window.audioEngine;
+    if (!a || !a.status) return 'Sound: not started';
+    var s = a.status(), t = s.stats || {};
+    return 'Sound: ' + s.state + (s.rate ? ' ' + s.rate + 'Hz' : '') +
+      ' · music volume ' + (s.musicVolumeWorks ? 'OK' : 'fixed (old route)') +
+      ' · music playing ' + s.musicPlaying + (s.musicBlocked ? ' (' + s.musicBlocked + ' waiting for a tap)' : '') +
+      ' · effects ' + (t.played || 0) + ' played, ' + (t.late || 0) + ' late, ' + (t.dropped || 0) + ' dropped, ' +
+      s.cachedMB + 'MB cached';
   }
   function repair() {
     if (!confirm('Clear the offline copy and reload? Your saves are kept.')) return;

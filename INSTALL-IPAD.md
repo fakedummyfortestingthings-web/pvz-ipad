@@ -7,6 +7,7 @@
 - **Cloud sync (Firebase)**: saves made offline upload when the iPad is back online. Off until `docs/sync/firebase-config.js` has real values. Uses `initializeAuth` (no apis.google.com script, which school networks often block).
 - **Screen shapes**: on screens narrower than 16:10 (an iPad in full screen is ~4:3) the game is letterboxed with thin bars top and bottom so the whole lawn, the pause button and incoming zombies stay visible; wider screens fill edge to edge.
 - **Graphics resets**: if iPadOS takes the game's graphics away when memory runs low (frozen or black picture, engine error 16321), the game saves, reloads itself and steps Graphics down one level (at most 2 automatic reloads per 5 minutes).
+- **Sound on iPad**: music goes through Web Audio gain nodes (iPadOS ignores `<audio>` volume, so fades, the music slider and muting one track under another didn't work); music that tries to start before the first tap starts on that tap; all short sound effects (~7 MB) are preloaded into memory after start-up and decoded at their own sample rate, so cues aren't late. ⚙ → Device shows a "Sound:" line for troubleshooting.
 - **Exporting profiles**: on iPad, the game's Export (and ⚙ → Export) opens the Share sheet → "Save to Files"; if sharing or downloads are blocked (managed/school iPads), a sheet offers Download or Copy as text.
 
 ## Playing on iPad
